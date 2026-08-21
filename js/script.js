@@ -48,6 +48,11 @@
   const timecardPeriodEl = document.getElementById("dd-timecard-period");
   const timecardBody = document.getElementById("dd-timecard-body");
   const timecardDoneBtn = document.getElementById("dd-timecard-done");
+  const timecardPrevLink = document.getElementById("dd-timecard-prev-link");
+  const timecardCurrentLink = document.getElementById("dd-timecard-current-link");
+  const timecardListOverlay = document.getElementById("dd-timecard-list-overlay");
+  const timecardListBody = document.getElementById("dd-timecard-list-body");
+  const timecardListDoneBtn = document.getElementById("dd-timecard-list-done");
 
   const statsOverlay = document.getElementById("dd-stats-overlay");
   const statsPeriodEl = document.getElementById("dd-stats-period");
@@ -595,10 +600,19 @@
   // before/after it are period-end Saturdays, Sunday starts the next one)
   // that today falls in — every day gets a row, punched or not, so a
   // missed punch is as visible as a filled-in one.
+  //
+  // timeCardRefDate controls WHICH period is shown — it's reset to today
+  // whenever the popup is freshly opened from the hamburger menu, but the
+  // Previous list (below) can point it at an earlier period instead.
+  // "Today" is always computed separately from the real current date, so
+  // the today-highlight only ever lands on the actual current day, never
+  // on a day in a past period being viewed.
+  let timeCardRefDate = new Date();
+
   function renderTimeCard() {
     if (!timecardBody) return;
-    const today = startOfDay(new Date());
-    const periodStart = getPeriodStart(today);
+    const actualToday = startOfDay(new Date());
+    const periodStart = getPeriodStart(timeCardRefDate);
     const periodEnd = new Date(periodStart);
     periodEnd.setDate(periodEnd.getDate() + 13);
     if (timecardPeriodEl) {
@@ -606,7 +620,9 @@
         `${periodStart.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ` +
         `${periodEnd.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
     }
-    const todayKey = toDateKey(today);
+    const todayKey = toDateKey(actualToday);
+    const isCurrentPeriod = periodStart.getTime() === getPeriodStart(actualToday).getTime();
+    timecardCurrentLink?.classList.toggle("hide", isCurrentPeriod);
     timecardBody.innerHTML = "";
     for (let i = 0; i < 14; i++) {
       const d = new Date(periodStart);
@@ -657,12 +673,16 @@
     }
   }
 
-  function openTimeCard() {
-    closeHamburgerMenu();
-    renderTimeCard();
+  function showTimeCardOverlay() {
     timecardOverlay?.classList.add("is-open");
     timecardOverlay?.setAttribute("aria-hidden", "false");
     timecardDoneBtn?.focus();
+  }
+  function openTimeCard() {
+    closeHamburgerMenu();
+    timeCardRefDate = new Date(); // always opens on the current period
+    renderTimeCard();
+    showTimeCardOverlay();
   }
   function closeTimeCard() {
     timecardOverlay?.classList.remove("is-open");
@@ -675,6 +695,108 @@
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && timecardOverlay?.classList.contains("is-open")) closeTimeCard();
+  });
+
+  // Jumps the main Time Card view straight back to today's period without
+  // closing the popup — only visible once you've drilled into a past one.
+  timecardCurrentLink?.addEventListener("click", () => {
+    timeCardRefDate = new Date();
+    renderTimeCard();
+  });
+
+  // Every past pay period that has any recorded activity (a punch or a
+  // stamped CC gratuity), most recent first — the current period is left
+  // out since that's what the main view already shows.
+  function getPastPeriodsWithData() {
+    const currentPeriodStart = getPeriodStart(new Date()).getTime();
+    const periods = new Map(); // period start (ms) -> { start, totalMinutes }
+    Object.keys(timeCard).forEach((key) => {
+      const rec = timeCard[key];
+      const hasShift = Array.isArray(rec?.shifts) && rec.shifts.some((s) => s?.in || s?.out);
+      const hasGrat = rec?.ccGratuity !== null && rec?.ccGratuity !== undefined && rec?.ccGratuity !== "";
+      if (!hasShift && !hasGrat) return;
+      const d = new Date(`${key}T00:00:00`);
+      if (Number.isNaN(d.getTime())) return;
+      const periodStart = getPeriodStart(d);
+      const pKey = periodStart.getTime();
+      if (pKey === currentPeriodStart) return;
+      if (!periods.has(pKey)) periods.set(pKey, { start: periodStart, totalMinutes: 0 });
+      const entry = periods.get(pKey);
+      if (Array.isArray(rec.shifts)) {
+        rec.shifts.forEach((s) => {
+          if (s.in && s.out) entry.totalMinutes += shiftMinutes(s.in, s.out);
+        });
+      }
+    });
+    return Array.from(periods.values()).sort((a, b) => b.start - a.start);
+  }
+
+  function renderTimeCardList() {
+    if (!timecardListBody) return;
+    timecardListBody.innerHTML = "";
+    const periods = getPastPeriodsWithData();
+    if (!periods.length) {
+      const empty = document.createElement("div");
+      empty.className = "dd-timecard-list-empty";
+      empty.textContent = "No previous time cards yet.";
+      timecardListBody.appendChild(empty);
+      return;
+    }
+    periods.forEach((p) => {
+      const end = new Date(p.start);
+      end.setDate(end.getDate() + 13);
+      const item = document.createElement("div");
+      item.className = "dd-timecard-list-item";
+      const range = document.createElement("span");
+      range.className = "dd-timecard-list-range";
+      range.textContent =
+        `${p.start.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ` +
+        `${end.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+      const meta = document.createElement("span");
+      meta.className = "dd-timecard-list-meta";
+      const hours = Math.round((p.totalMinutes / 60) * 100) / 100;
+      meta.textContent = `${parseFloat(hours.toFixed(2))}h`;
+      item.appendChild(range);
+      item.appendChild(meta);
+      item.addEventListener("click", () => {
+        timeCardRefDate = new Date(p.start);
+        renderTimeCard();
+        closeTimeCardList();
+        showTimeCardOverlay();
+      });
+      timecardListBody.appendChild(item);
+    });
+  }
+
+  function openTimeCardList() {
+    renderTimeCardList();
+    timecardListOverlay?.classList.add("is-open");
+    timecardListOverlay?.setAttribute("aria-hidden", "false");
+    timecardListDoneBtn?.focus();
+  }
+  function closeTimeCardList() {
+    timecardListOverlay?.classList.remove("is-open");
+    timecardListOverlay?.setAttribute("aria-hidden", "true");
+  }
+  timecardPrevLink?.addEventListener("click", () => {
+    closeTimeCard();
+    openTimeCardList();
+  });
+  timecardListDoneBtn?.addEventListener("click", () => {
+    closeTimeCardList();
+    showTimeCardOverlay();
+  });
+  timecardListOverlay?.addEventListener("click", (e) => {
+    if (e.target === timecardListOverlay) {
+      closeTimeCardList();
+      showTimeCardOverlay();
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && timecardListOverlay?.classList.contains("is-open")) {
+      closeTimeCardList();
+      showTimeCardOverlay();
+    }
   });
 
   // === Stats history ===

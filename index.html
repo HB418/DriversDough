@@ -16,7 +16,7 @@
   background-color: white;
 }
   </style>
-<link href="css/style.css?v=22" rel="stylesheet"/>
+<link href="css/style.css?v=23" rel="stylesheet"/>
 <link href="css/dd-box-modal.css?v=2" rel="stylesheet"/>
 <script>
   // Applied before first paint so returning in dark mode doesn't flash light.
@@ -222,8 +222,19 @@
 <div class="dd-confirm-card card dd-timecard-card" role="dialog" aria-modal="true" aria-labelledby="dd-timecard-title">
 <h4 class="text-center" id="dd-timecard-title">Time Card</h4>
 <div class="dd-timecard-period" id="dd-timecard-period"></div>
+<div class="dd-timecard-nav">
+<button class="dd-timecard-link" id="dd-timecard-prev-link" type="button">Previous</button>
+<button class="dd-timecard-link hide" id="dd-timecard-current-link" type="button">Back to Current</button>
+</div>
 <div class="dd-timecard-scroll" id="dd-timecard-body"></div>
 <button class="btn-secondary" id="dd-timecard-done" type="button">Done</button>
+</div>
+</div>
+<div class="dd-confirm-overlay" id="dd-timecard-list-overlay" aria-hidden="true">
+<div class="dd-confirm-card card dd-timecard-card" role="dialog" aria-modal="true" aria-labelledby="dd-timecard-list-title">
+<h4 class="text-center" id="dd-timecard-list-title">Previous Time Cards</h4>
+<div class="dd-timecard-scroll" id="dd-timecard-list-body"></div>
+<button class="btn-secondary" id="dd-timecard-list-done" type="button">Done</button>
 </div>
 </div>
 <div class="dd-confirm-overlay" id="dd-stats-overlay" aria-hidden="true">
@@ -250,5 +261,5 @@
 </div><!-- /#appShell -->
 <script src="js/calculations.js?v=2"></script>
 <script src="js/dd-box-modal.js?v=2"></script>
-<script src="js/script.js?v=15"></script></body>
+<script src="js/script.js?v=16"></script></body>
 </html>

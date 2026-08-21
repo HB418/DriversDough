@@ -1100,6 +1100,83 @@ header h1 {
   margin: 1rem auto 0;
 }
 
+/* "Previous" opens a list of past pay periods that have data (see
+   #dd-timecard-list-overlay below); "Back to Current" only shows once
+   you've drilled into one, to jump back to today's period. Plain text
+   links, not buttons, so they read as navigation rather than actions. */
+.dd-timecard-nav {
+  display: flex;
+  justify-content: center;
+  gap: 1.25rem;
+  margin-bottom: 0.6rem;
+}
+.dd-timecard-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--dd-sky);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  cursor: pointer;
+  box-shadow: none !important;
+}
+.dd-timecard-link:hover,
+.dd-timecard-link:focus,
+.dd-timecard-link:active {
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* Previous Time Cards list — one row per past pay period with any
+   recorded activity, most recent first, tap to open it in the main
+   Time Card view. */
+.dd-timecard-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid #e6e6e6;
+  border-radius: 10px;
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+  background: #fff;
+}
+.dd-timecard-list-item:last-child {
+  margin-bottom: 0;
+}
+.dd-timecard-list-item:hover {
+  border-color: var(--dd-amber);
+}
+.dd-timecard-list-range {
+  font-weight: 700;
+}
+.dd-timecard-list-meta {
+  font-size: 0.85rem;
+  color: #777;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.dd-timecard-list-empty {
+  font-size: 0.9rem;
+  color: #777;
+  padding: 0.5rem 0.25rem;
+  text-align: center;
+}
+:root[data-theme="dark"] .dd-timecard-list-item {
+  border-color: #3a3f47;
+  background: #262a31;
+}
+:root[data-theme="dark"] .dd-timecard-list-item:hover {
+  border-color: var(--dd-amber);
+}
+:root[data-theme="dark"] .dd-timecard-list-meta,
+:root[data-theme="dark"] .dd-timecard-list-empty {
+  color: #aaa;
+}
+
 /* === Stats popup === */
 .dd-stats-card {
   max-width: 520px;
