@@ -1,0 +1,1366 @@
+/* Driver's Dough — base app styles (deliveries form, table, calculations) */
+
+/* === Brand palette === */
+/* Pulled straight from the shop's own banner art — the day shot (blue sky,
+   yellow awning, orange lettering, red trim) and the night shot (near-black
+   sky, the same awning lit up, neon-red trim). Light mode uses the day set,
+   dark mode swaps in the night set via the same variable names, so every
+   rule below that reads var(--dd-*) re-themes itself automatically when
+   #darkModeToggle flips data-theme — no rule has to be written twice. */
+:root {
+  --dd-sky: #55a6d9;
+  --dd-yellow: #f2b705;
+  --dd-amber: #f29f05;
+  --dd-orange: #f28705;
+  --dd-red: #d91c0b;
+}
+:root[data-theme="dark"] {
+  --dd-sky: #55a6d9; /* night shot has no blue left in it — kept as-is, it still reads fine against navy */
+  --dd-yellow: #f2cb05;
+  --dd-amber: #f29f05;
+  --dd-orange: #d97904;
+  --dd-red: #f20505;
+  --dd-navy: #00040d;
+}
+
+/* === Page base === */
+/* Stops the rubber-band bounce mobile browsers do at the top/bottom of a
+   scroll — without it, that bounce stretches the whole page (including
+   the fixed header/footer) for a moment, which reads as the footer
+   "growing" while you scroll. */
+html {
+  overscroll-behavior-y: none;
+}
+body {
+  font-family: 'Patrick Hand SC', cursive;
+  background: #f4f8fb; /* faint tint of the day sky blue instead of flat gray */
+  margin: 0;
+  padding: 0;
+  overscroll-behavior-y: none;
+}
+
+header, footer {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+
+/* PaperCSS's own default h1 margin (top and bottom) is sized relative to
+   its own huge font-size — even after script.js's fitHeaderTitle() scales
+   that font-size down to fit the header width, the margin doesn't shrink
+   with it, leaving noticeably more air above/below the title than the
+   banner/divider need. Tighten it to a fixed, modest gap instead. */
+header h1 {
+  margin: 0.3rem 0;
+}
+
+/* Header and footer stay put; the page scrolls underneath both. Actual
+   heights vary (the banner image, font loading, etc.) so JS measures them
+   and writes --header-h / --footer-h — see syncFixedBarOffsets() in
+   script.js — with these values as a reasonable first-paint fallback. */
+#appHeader,
+#appFooter {
+  position: fixed;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  border-radius: 0;
+}
+/* The awning-stripe accent is a box-shadow, not a border — a border adds
+   to the element's own height, and these two are the ones whose height
+   gets re-measured (see syncFixedBarOffsets in script.js) to size the
+   page's scroll padding. A box-shadow paints in the same place without
+   ever being able to affect that measurement. */
+#appHeader {
+  top: 0;
+  box-shadow: 0 4px 0 0 var(--dd-yellow);
+}
+#appFooter {
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.4rem 1rem; /* slimmer than the header — it only holds icon buttons */
+  box-shadow: 0 -4px 0 0 var(--dd-yellow);
+}
+/* #phoneColumn (not body) carries the header/footer clearance padding —
+   it's the element that actually scrolls, on a phone AND in the desktop
+   split-view below, so the header/footer measurement JS keeps working
+   unchanged either way. */
+#phoneColumn {
+  padding-top: var(--header-h, 160px);
+  padding-bottom: var(--footer-h, 60px);
+  box-sizing: border-box;
+  position: relative;
+  /* Makes #phoneColumn's own rendered width queryable by @container rules
+     below — the deliveries table (and anything else that wants to) can
+     then size itself off the ACTUAL space it has (a narrow phone, a
+     dragged-wide split-view column, whatever) instead of off the
+     viewport, which is a different number once the split-view is in play. */
+  container-type: inline-size;
+  container-name: app-col;
+}
+
+/* === Large-screen split view === */
+/* On a phone (or a narrow browser window) the app fills the screen, same
+   as always. On a real desktop window there's no reason to stretch a
+   phone-shaped layout across the whole monitor — worse, the banner photo
+   (a wide 3:2 shot sized at width:100%) scales its HEIGHT with that extra
+   width too, so on a wide screen it renders taller than the screen itself
+   and buries everything else below the fold with no visual hint that the
+   page still scrolls. Past this width, pin the app to a phone-width
+   column on the left — exactly like phone mode, just not stretched — and
+   leave the right side open for later. */
+:root {
+  --phone-col-w: 480px; /* dragged live via #paneResizer, persisted in localStorage */
+}
+#rightPane {
+  display: none;
+}
+#paneResizer {
+  display: none;
+}
+@media (min-width: 900px) {
+  html, body {
+    height: 100%;
+  }
+  body {
+    display: flex;
+    margin: 0;
+    overflow: hidden; /* each pane scrolls on its own instead of the whole page */
+  }
+  /* Groups the column + divider + blank pane so they lay out as one flex
+     row filling the window — no border, shadow, padding, or rounding, just
+     the plain flush-edge split from when this was first built. */
+  #appShell {
+    display: flex;
+    width: 100%;
+    height: 100%;
+  }
+  #phoneColumn {
+    width: var(--phone-col-w);
+    flex-shrink: 0;
+    height: 100%;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    /* The header-h/footer-h padding reserve is only needed when the header/
+       footer are position:fixed (removed from flow, so something has to
+       hold their space open). Below they switch to sticky, which stays in
+       flow and reserves its own space automatically — keeping this padding
+       too would double-count it and shove the whole column down. */
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  /* #appHeader/#appFooter are position:fixed everywhere else, which pins
+     them to the whole browser window — fine on a phone, where the column
+     IS the window, but wrong here since the column is only part of a wide
+     screen. Switch them to position:sticky against #phoneColumn's own
+     scrollport instead, so they stay pinned to the top/bottom of the
+     column exactly like phone mode, without following the right pane or
+     the rest of the browser window. */
+  #appHeader,
+  #appFooter {
+    position: sticky;
+  }
+  /* Drag handle between the app column and the blank pane — lets the user
+     size the column to their own window instead of a fixed 480px guess. */
+  #paneResizer {
+    display: block;
+    flex-shrink: 0;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+    background: #ddd;
+    touch-action: none;
+  }
+  #paneResizer:hover,
+  #paneResizer.is-dragging {
+    background: var(--dd-sky);
+  }
+  #rightPane {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    background: #eef2f5;
+  }
+  /* Only here does #main-content sit flush against something that isn't
+     the natural screen edge (the browser edge on the left, the paneResizer
+     divider on the right) — match the 1rem gutter #appHeader/#appFooter/
+     #formSection already have. */
+  #main-content {
+    padding: 0 1rem;
+    box-sizing: border-box;
+  }
+}
+
+/* === Footer: hamburger menu (left), title (center), dark toggle (right) === */
+.hamburger-btn,
+.dark-toggle-btn {
+  flex-shrink: 0;
+  box-sizing: border-box !important;
+  width: 2rem !important;
+  height: 2rem !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 1px solid var(--dd-sky) !important;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  vertical-align: middle;
+  /* PaperCSS puts a big offset drop-shadow under every <button> by default
+     (its "floating paper" look) — left in place here it draws a dark smudge
+     below-right of these small icon buttons, which reads as the button
+     sitting in the upper half of its space even though it's geometrically
+     centered. Kill it outright, on every state PaperCSS defines it for. */
+  box-shadow: none !important;
+  transform: none !important;
+}
+.hamburger-btn:hover,
+.hamburger-btn:focus,
+.hamburger-btn:active,
+.dark-toggle-btn:hover,
+.dark-toggle-btn:focus,
+.dark-toggle-btn:active {
+  box-shadow: none !important;
+  transform: none !important;
+}
+.hamburger-btn {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  position: relative; /* anchors the menu panel below */
+}
+.hamburger-btn span {
+  display: block;
+  width: 1.15rem;
+  height: 2px;
+  background: #333;
+  border-radius: 1px;
+}
+.dark-toggle-btn {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.hamburger-menu {
+  position: absolute;
+  left: 1rem;
+  bottom: 100%;
+  margin-bottom: 0.6rem;
+  display: none;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-top: 3px solid var(--dd-yellow);
+  border-radius: 10px;
+  box-shadow: 0 -4px 14px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  min-width: 170px;
+}
+.hamburger-menu.is-open {
+  display: flex;
+}
+.hamburger-menu .menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.75rem 1rem;
+  border: none;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+  font: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+  color: #222;
+}
+.hamburger-menu .menu-item:last-child {
+  border-bottom: none;
+}
+.hamburger-menu .menu-item:hover,
+.hamburger-menu .menu-item:focus-visible {
+  background: #f2f2f2;
+}
+
+/* Punch In/Out button — footer, dead center between the hamburger and
+   dark-mode icon buttons. Sized and bordered to match those two (1px
+   border, 6px radius, ~2rem tall) rather than standing out as its own
+   thing. */
+.footer-punch-slot {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+}
+.punch-btn {
+  /* Same defensive !important pattern as .hamburger-btn/.dark-toggle-btn
+     just above — PaperCSS's own <button> defaults (padding, min-height,
+     line-height) otherwise win the cascade on a real page (invisible from
+     this sandbox, where PaperCSS never loads) and push this button taller
+     than the other two, which reads as "sitting too high" even though
+     #appFooter centers all three the same way. */
+  flex-shrink: 0;
+  box-sizing: border-box !important;
+  height: 2rem !important;
+  margin: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 0.3rem;
+  padding: 0 0.6rem !important;
+  border: 1px solid var(--dd-sky) !important;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--dd-sky);
+  cursor: pointer;
+  vertical-align: middle;
+  box-shadow: none !important; /* kill PaperCSS's default button drop-shadow */
+  transform: none !important;
+}
+.punch-btn:hover,
+.punch-btn:focus,
+.punch-btn:active {
+  box-shadow: none !important;
+  transform: none !important;
+}
+.punch-btn.is-punched-in {
+  border-color: var(--dd-red) !important;
+  color: var(--dd-red);
+}
+.punch-icon {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.punch-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+:root[data-theme="dark"] .punch-btn {
+  background: transparent;
+  border-color: var(--dd-amber) !important;
+  color: var(--dd-amber);
+}
+:root[data-theme="dark"] .punch-btn.is-punched-in {
+  border-color: var(--dd-red) !important;
+  color: var(--dd-red);
+}
+
+/* The banner is a wide (3:2) photo at width:100%, so its rendered HEIGHT
+   is a function of whatever width it's given — a phone gets a reasonable
+   height, but anything wider (a tablet, a browser window resized to
+   something between "phone" and the 900px split-view breakpoint, or that
+   breakpoint not existing at all on some future layout) makes it taller
+   in lockstep, with nothing to stop it. This is deliberately NOT gated to
+   a width breakpoint — the failure mode is about height eating the
+   viewport, not about width, so it's capped against viewport height
+   directly, at every width, everywhere, all the time. object-fit:cover
+   crops instead of squishing once the cap actually binds. */
+#modeImage {
+  max-height: 38vh;
+  object-fit: cover;
+  object-position: center 40%;
+}
+
+/* The banner photo is a wide (3:2) shot — sized at width:100% with
+   height:auto (inline in index.html), it scales to nearly 450px tall at a
+   phone's landscape width. Combined with the footer, that leaves less
+   than the phone's own screen height for actual content, and on the
+   shortest phones the header and footer overlap and block every tap.
+   Cap the banner's height whenever the viewport itself is short — not
+   just "landscape" as a label, since what actually matters is how much
+   vertical room is left, and use !important since the inline
+   width:100%/height:auto in the markup otherwise wins by default. */
+@media (max-height: 500px) {
+  #modeImage {
+    height: 70px !important;
+    object-fit: cover;
+    object-position: center 35%;
+  }
+  header h1 {
+    font-size: 1.4rem;
+    margin-top: 0.2rem;
+  }
+}
+
+/* On a phone, #main-content sitting flush against the screen edge was
+   never the complaint — only the split-view divider on the right (and the
+   browser edge on the left) at >=900px, where #main-content is the only
+   section that never got #appHeader/#appFooter/#formSection's 1rem
+   horizontal padding. Fixing that at every width double-padded phone mode
+   (which already had its own correct spacing), so it's scoped to the
+   split-view media query below instead of applied globally. */
+
+/* "Deliveries" and "Calculations" headings: the default browser/PaperCSS
+   h4 bottom margin left noticeably more air above the buttons/cards below
+   them than felt right — tighten just that gap. */
+#main-content > h4 {
+  display: inline-block;
+  margin-bottom: 0.65rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 3px solid var(--dd-orange);
+}
+/* "Calculations" is followed directly by its first .card (no button row in
+   between like "Deliveries" has) — match the same tightened gap. */
+#main-content > h4 + .card {
+  margin-top: 0.75rem;
+}
+/* The browser/PaperCSS default top margin on an h4 that follows a .card
+   (i.e. "Calculations", right under the Deliveries table) stacks on top of
+   that card's own bottom margin and roughly doubles the gap versus every
+   other gap on this screen — override it down to match. */
+#main-content > .card + h4 {
+  margin-top: 0.5rem;
+}
+
+/* Breathing room between the Deliveries heading and the Add/End Night
+   buttons below it, and between those buttons and the table. */
+.row-buttons {
+  /* Add and End Night are different lengths — centering them as a pair
+     left an off-balance gap between them. Pinning them to opposite ends
+     of the row instead reads as intentional regardless of size mismatch. */
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+  margin-bottom: 1.2rem;
+}
+.row-buttons button {
+  padding: 0.35rem 1.1rem;
+  font-size: 0.85rem;
+  min-width: 0;
+  margin: 0;
+}
+
+/* === Brand buttons === */
+/* PaperCSS ships its own primary/success/danger/secondary palette — swap
+   it for the shop's own colors so every button in the app (top row, form,
+   both popups) matches the banner art instead of generic web-app blue/
+   green/red. Only recoloring background/border/text; PaperCSS's hand-drawn
+   border/shadow treatment on these classes is left alone. */
+.btn-primary {
+  background-color: var(--dd-yellow) !important;
+  border-color: var(--dd-orange) !important;
+  color: #2b1400 !important;
+}
+.btn-success {
+  background-color: var(--dd-orange) !important;
+  border-color: var(--dd-red) !important;
+  color: #fff !important;
+}
+.btn-danger {
+  background-color: var(--dd-red) !important;
+  border-color: var(--dd-red) !important;
+  color: #fff !important;
+}
+.btn-secondary {
+  background-color: #fff !important;
+  border: 2px solid var(--dd-sky) !important;
+  color: var(--dd-sky) !important;
+}
+:root[data-theme="dark"] .btn-secondary {
+  background-color: transparent !important;
+  border-color: var(--dd-amber) !important;
+  color: var(--dd-amber) !important;
+}
+
+.card {
+  margin: 1rem auto;
+  padding: 1.5rem;
+  background: #fff;
+  border-radius: 12px;
+  border-top: 4px solid var(--dd-amber);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+  max-width: 860px;
+}
+.card strong {
+  color: var(--dd-orange);
+}
+
+/* Utility: hide elements when toggled by JS */
+.hide { display: none; }
+
+/* === New Delivery Entry form === */
+#formSection {
+  display: grid;
+  place-items: center;    /* centers the form horizontally and vertically */
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0 1rem;
+  box-sizing: border-box;
+}
+
+#formSection #entry-form {
+  width: 100%;
+  max-width: 620px;
+  margin: 1rem auto;
+  box-sizing: border-box;
+  border: none;
+}
+
+#formSection #entry-form fieldset {
+  border: none;
+  padding: 1.25rem;
+  margin: 0;
+}
+
+#formSection #entry-form .form-group {
+  margin-bottom: 1rem;
+}
+/* :not(.checkbox) so this doesn't fight the checkbox-row's own grid/hide
+   rules below — this rule's two IDs would otherwise always win regardless
+   of how specific those rules are. */
+#formSection #entry-form label:not(.checkbox) {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+#formSection #entry-form input[type="text"],
+#formSection #entry-form input[type="number"],
+#formSection #entry-form input[type="date"],
+#formSection #entry-form select,
+#formSection #entry-form textarea {
+  display: block;
+  width: 100%;
+  padding: 0.5rem;
+  box-sizing: border-box;
+}
+#formSection #entry-form input[type="text"]:focus,
+#formSection #entry-form input[type="number"]:focus,
+#formSection #entry-form input[type="date"]:focus,
+#formSection #entry-form select:focus,
+#formSection #entry-form textarea:focus {
+  outline: none;
+  border-color: var(--dd-amber);
+  box-shadow: 0 0 0 3px rgba(242, 159, 5, 0.25);
+}
+
+#formSection .form-container {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+#formSection .form-container .input-wide {
+  width: 92%;
+  max-width: 640px;
+  margin: 0 auto;
+}
+@media (max-width: 480px) {
+  #formSection .form-container .input-wide {
+    width: 100%;
+  }
+}
+
+/* Fee + Order Type / Tip + Order Total: two-up rows */
+#formSection .form-container .centered-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem 1.25rem; /* row-gap col-gap */
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+#formSection .form-container .centered-inputs > .field select,
+#formSection .form-container .centered-inputs > .field input[type="number"] {
+  width: 100%;
+}
+@media (max-width: 340px) {
+  #formSection .form-container .centered-inputs {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Cash Tip / Partial Cash Tip checkboxes: labels above inputs, pair centered */
+#formSection .form-container .checkbox-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(130px, 1fr));
+  gap: 0.75rem 1.25rem;      /* vertical horizontal */
+  justify-items: center;
+  align-items: center;
+  margin: 0.5rem 0 0.75rem;
+}
+#formSection .form-container .checkbox-row .checkbox {
+  display: grid;
+  grid-template-rows: auto auto;
+  justify-items: center;
+  align-items: center;
+  text-align: center;
+}
+/* Needs to out-specificity the rule above to actually hide Partial Cash
+   Tip for a cash order — the generic .hide utility alone loses that fight. */
+#formSection .form-container .checkbox-row .checkbox.hide {
+  display: none;
+}
+#formSection .form-container .checkbox-row .checkbox span {
+  line-height: 1.1;
+}
+#formSection .form-container .checkbox-row .checkbox input[type="checkbox"] {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.65rem;  /* space between label and checkbox */
+}
+#formSection .form-container .checkbox-row .checkbox input[type="checkbox"]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Partial Cash Tip's checkbox+amount sit together on the second row. */
+#formSection .form-container .checkbox-row .checkbox .checkbox-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.65rem;
+}
+#formSection .form-container .checkbox-row .checkbox .checkbox-inline input[type="checkbox"] {
+  margin-top: 0;  /* the wrapper above already carries the spacing */
+}
+.cash-amount {
+  font-weight: 700;
+  color: var(--dd-orange);
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+/* Once a cash amount has been entered, the whole item shifts to line up
+   on the label's left edge instead of staying centered, with the
+   checkbox+amount row flush under the start of "Partial". */
+#formSection .form-container .checkbox-row .checkbox.has-amount {
+  justify-items: start;
+  text-align: left;
+}
+
+/* Submit / Cancel buttons: even, centered */
+#formSection .form-container .button-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(140px, 1fr));
+  gap: 1rem;
+  justify-items: center;
+  align-items: center;
+  margin: 1rem 0 0.25rem;
+}
+#formSection .form-container .button-row > * {
+  width: auto;
+}
+
+/* checkbox-row's two 130px-minimum columns (280px + gap) and button-row's
+   two 140px-minimum columns (296px + gap) don't fit inside a 320px phone
+   once the form's own padding is subtracted — that mismatch was forcing
+   the whole form (and the page) wider than the screen. Stack both instead.
+   (Placed after each rule's own base declaration on purpose — same
+   selector specificity, so source order is what decides the winner.) */
+@media (max-width: 340px) {
+  #formSection .form-container .checkbox-row {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+  #formSection .form-container .button-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* === Calculations cards === */
+/* Same treatment as the confirm dialog: PaperCSS injects a "-" before every
+   <li> via ::before (plus a -7px text-indent to tuck it against the text) —
+   kill both here, lay each row out as a flex row so the label sits flush
+   left and the value (currently just a floated span) sits flush right, and
+   bump the font size slightly for readability. */
+#main-content .card ul {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+  font-size: 1.08rem;
+  line-height: 1.6;
+}
+#main-content .card ul li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.2rem 0;
+  list-style: none;
+  text-indent: 0;
+  text-align: left;
+}
+#main-content .card ul li::before {
+  content: none;
+}
+#main-content .card ul li .float-right {
+  text-align: right;
+}
+/* The one number that matters most at the end of a shift — call it out. */
+#total-cash-owed {
+  color: var(--dd-red);
+  font-weight: 700;
+}
+
+/* === Deliveries table === */
+#deliveriesSection {
+  padding: 0.35rem;
+}
+
+#deliveriesSection table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;        /* respect the colgroup widths in index.html */
+  font-size: 0.82rem;
+  /* Safety net only — table-layout:fixed plus the container-query sizing
+     below is what actually keeps this table from overflowing at any
+     width, but this catches it if it ever somehow doesn't, instead of the
+     table blowing out the page layout. (Moved here from a bare `table`
+     rule in index.html's inline <style> — same behavior, just no longer
+     duplicated in two places.) */
+  overflow-x: auto;
+}
+
+/* PaperCSS puts a dashed border-top and line-height:1.5 on every <td> by
+   default (table tbody tr td { border-top: 1px dashed ...; line-height:
+   1.5; }) — invisible from this sandbox since PaperCSS can't load here,
+   but on a real page it draws a dashed line through every row and loosens
+   the row height beyond what these numbers were tuned for. Reset both
+   explicitly rather than just leaving them unset. */
+#deliveriesSection th, #deliveriesSection td {
+  padding: 0.22rem 0.3rem;
+  vertical-align: middle;
+  border-top: none !important;
+  line-height: 1.3 !important;
+}
+
+#deliveriesSection thead { font-size: 0.82rem; }
+#deliveriesSection thead th {
+  white-space: nowrap;
+  border-bottom: 2px solid var(--dd-amber) !important;
+}
+#deliveriesSection tbody td {
+  border-bottom: 1px solid #eee;
+}
+#deliveriesSection tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* The table's base sizing above is tuned for the narrowest phone this app
+   runs on — correct there, cramped anywhere with more room to spare. These
+   scale it back up as #phoneColumn (see container-type on it above) actually
+   has more width to give it: a bigger phone, a tablet, the split-view
+   column left at its default, or dragged out wide. table-layout:fixed's
+   column widths are in ch, which tracks the table's own font-size, so
+   bumping font-size here grows the columns proportionally too — no need
+   to also restate the colgroup at each step. */
+@container app-col (min-width: 380px) {
+  #deliveriesSection table,
+  #deliveriesSection thead {
+    font-size: 0.88rem;
+  }
+  #deliveriesSection th,
+  #deliveriesSection td {
+    padding: 0.26rem 0.36rem;
+  }
+}
+@container app-col (min-width: 460px) {
+  #deliveriesSection table,
+  #deliveriesSection thead {
+    font-size: 0.95rem;
+  }
+  #deliveriesSection th,
+  #deliveriesSection td {
+    padding: 0.3rem 0.45rem;
+  }
+}
+@container app-col (min-width: 600px) {
+  #deliveriesSection table,
+  #deliveriesSection thead {
+    font-size: 1.05rem;
+  }
+  #deliveriesSection th,
+  #deliveriesSection td {
+    padding: 0.4rem 0.6rem;
+  }
+}
+
+/* # column: narrow, right-aligned */
+#deliveriesSection th:nth-child(1),
+#deliveriesSection td:nth-child(1) {
+  text-align: right;
+}
+
+/* Street column: never wraps to a second row and never grows the row.
+   Long addresses run on past the column's visible width, tucked behind
+   the next column's edge — drag (mouse or touch) inside the cell to
+   scroll it left/right and read the rest. */
+#deliveriesSection td.street-cell {
+  overflow: hidden;
+  padding: 0;
+}
+#deliveriesSection .street-scroll {
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 0.3rem 0.45rem;
+  cursor: grab;
+  touch-action: none;         /* we drive scrolling ourselves via pointer events */
+  scrollbar-width: none;      /* Firefox */
+  -ms-overflow-style: none;   /* old Edge */
+}
+#deliveriesSection .street-scroll::-webkit-scrollbar {
+  display: none;              /* Chrome/Safari */
+}
+#deliveriesSection .street-scroll:active {
+  cursor: grabbing;
+}
+
+/* Type column: centered emoji */
+#deliveriesSection th:nth-child(3),
+#deliveriesSection td:nth-child(3) {
+  text-align: center;
+}
+/* The phone/globe/dollar glyphs' own drawn shape isn't centered within
+   their character box the same way real text is — text-align:center lands
+   the box dead center but the icon's visual "ink" still reads off to one
+   side. Nudging just the data cell (not the "Type" header) right a few px
+   to compensate — a best guess since color-emoji rendering isn't visible
+   from here; tell me which way / how much if it still looks off. */
+#deliveriesSection td:nth-child(3) {
+  padding-left: calc(0.45rem + 3px);
+  padding-right: calc(0.45rem - 3px);
+}
+
+/* Total / Tip / Fee columns: centered header AND data, so each dollar
+   amount sits directly under its header word instead of jammed against
+   the column's right edge. */
+#deliveriesSection th:nth-child(4),
+#deliveriesSection th:nth-child(5),
+#deliveriesSection th:nth-child(6),
+#deliveriesSection td:nth-child(4),
+#deliveriesSection td:nth-child(5),
+#deliveriesSection td:nth-child(6) {
+  white-space: nowrap;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Street and Tip cells are the only clickable parts of a row — Street opens
+   the full Delivery Details popup (Edit/Delete/Done live there now), Tip
+   opens just the cash/card breakdown. Everything else in a row is inert,
+   so only these two show a pointer cursor. */
+#deliveriesSection td.tip-cell {
+  cursor: pointer;
+}
+
+/* Tip cell: tap any row's tip to see its cash/card breakdown (see
+   showTipBreakdown in script.js). The small "P" flags a partial-cash split;
+   the small "$" flags a tip paid entirely in cash — both sit right after
+   the number, same as any normal subscript. */
+.partial-tip-marker,
+.cash-tip-marker {
+  margin-left: 1px;
+  font-size: 0.65em;
+  font-weight: 700;
+  color: var(--dd-orange);
+}
+
+/* === Order confirmation === */
+/* A plain summary after Add/Update — no pizza-box graphic, just a clean
+   readable card, since that graphic gets old appearing on every submit. */
+.dd-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.38);
+  padding: 1rem;
+  z-index: 9999;
+}
+.dd-confirm-overlay.is-open {
+  display: flex;
+}
+.dd-confirm-card {
+  width: min(92vw, 420px);
+  max-height: 90svh;
+  overflow-y: auto;
+  margin: 0;
+}
+.dd-confirm-card h4 {
+  margin-top: 0;
+  font-size: 1.4rem;
+}
+.dd-confirm-card ul {
+  font-size: 1.15rem;   /* comfortably readable, per feedback */
+  line-height: 1.5;
+  list-style: none;
+  margin: 0;
+  padding-left: 0;
+}
+.dd-confirm-card ul li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid #eee;
+  list-style: none;
+  text-indent: 0;     /* PaperCSS's ul li sets a -7px text-indent for its own dash marker */
+}
+/* PaperCSS injects a "-" before every ul li via ::before — kill it here so
+   only our own text renders. */
+.dd-confirm-card ul li::before {
+  content: none;
+}
+.dd-confirm-card ul li:last-child {
+  border-bottom: none;
+}
+.dd-confirm-card ul li span:first-child {
+  text-align: left;
+}
+.dd-confirm-card ul li .dd-confirm-value {
+  font-weight: 700;
+  text-align: right;
+}
+.dd-confirm-ok {
+  display: block;
+  margin: 1rem auto 0;
+}
+
+/* Delivery Details popup (opened by tapping a row's Street cell): same
+   card/list styling as the plain confirm dialog, but with a 3-button
+   action row (Edit / Delete / Done) instead of a single OK. */
+.dd-delivery-actions {
+  display: flex;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 1rem 0 0;
+  flex-wrap: wrap;
+}
+.dd-delivery-actions button {
+  padding: 0.4rem 1rem;
+  font-size: 0.9rem;
+  min-width: 0;
+  margin: 0;
+}
+
+/* Street row in the Delivery Details popup: a dropdown of every delivery
+   (not plain text), so tapping the wrong row is a quick fix right here. */
+.dd-delivery-street-select {
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  text-align: right;
+  max-width: 60%;
+  padding: 0.2rem 0.3rem;
+  border: 1px solid var(--dd-amber);
+  border-radius: 6px;
+  background: #fff;
+}
+
+/* === Punch In/Out popup === */
+.dd-punch-date {
+  text-align: center;
+  font-weight: 700;
+  color: var(--dd-orange);
+  margin-top: 0.5rem;
+}
+.dd-punch-field {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+.dd-punch-field label {
+  font-weight: 700;
+}
+.dd-punch-field input[type="time"] {
+  font: inherit;
+  font-size: 1.1rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--dd-amber);
+  border-radius: 6px;
+  background: #fff;
+}
+.dd-punch-hint {
+  text-align: center;
+  font-size: 0.8rem;
+  color: #777;
+  margin: 0.6rem 0 0;
+}
+:root[data-theme="dark"] .dd-punch-field input[type="time"] {
+  background: #14171f;
+  color: #e8e8e8;
+  border-color: var(--dd-amber);
+}
+:root[data-theme="dark"] .dd-punch-hint {
+  color: #999;
+}
+
+/* === Time Card popup === */
+/* Each day is its own card: a date heading, then a 2x2 grid of fields
+   (Row A: In / Out — Row B: Hours / CC Grat.) instead of a 5-column table.
+   Two fields per row means nothing needs a tiny font or tight padding to
+   fit — that was the whole problem with the table version. */
+.dd-timecard-card {
+  max-width: 560px;
+  width: 100%;
+}
+.dd-timecard-period {
+  text-align: center;
+  font-weight: 700;
+  color: var(--dd-orange);
+  margin-top: 0.4rem;
+  margin-bottom: 0.6rem;
+  font-size: 1rem;
+}
+.dd-timecard-scroll {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.dd-timecard-day {
+  border: 1px solid #e6e6e6;
+  border-radius: 10px;
+  margin-bottom: 0.6rem;
+  overflow: hidden;
+}
+.dd-timecard-day:last-child {
+  margin-bottom: 0;
+}
+.dd-timecard-day-date {
+  font-weight: 700;
+  font-size: 1.05rem;
+  padding: 0.5rem 0.75rem;
+  background: #f7f2e6;
+  border-bottom: 2px solid var(--dd-amber);
+}
+.dd-timecard-day-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.dd-timecard-field {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid #f0f0f0;
+}
+/* Left column of each row gets a divider against the right column. */
+.dd-timecard-field:nth-child(odd) {
+  border-right: 1px solid #f0f0f0;
+}
+/* Row B (Hours / CC Grat.) is the last row in the grid — no bottom border. */
+.dd-timecard-field:nth-child(3),
+.dd-timecard-field:nth-child(4) {
+  border-bottom: none;
+}
+.dd-timecard-field-label {
+  font-weight: 700;
+  color: var(--dd-orange);
+  font-size: 0.85rem;
+}
+.dd-timecard-field-value {
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+.dd-timecard-day.dd-timecard-today {
+  border-color: var(--dd-amber);
+  box-shadow: 0 0 0 2px rgba(242, 159, 5, 0.2);
+}
+.dd-timecard-day.dd-timecard-today .dd-timecard-day-date {
+  background: rgba(242, 159, 5, 0.22);
+}
+:root[data-theme="dark"] .dd-timecard-day {
+  border-color: #3a3f47;
+}
+:root[data-theme="dark"] .dd-timecard-day-date {
+  background: #262a31;
+  color: #e8e8e8;
+}
+:root[data-theme="dark"] .dd-timecard-field {
+  border-bottom-color: #333;
+}
+:root[data-theme="dark"] .dd-timecard-field:nth-child(odd) {
+  border-right-color: #333;
+}
+:root[data-theme="dark"] .dd-timecard-field-value {
+  color: #e8e8e8;
+}
+:root[data-theme="dark"] .dd-timecard-day.dd-timecard-today {
+  border-color: var(--dd-amber);
+  box-shadow: 0 0 0 2px rgba(242, 203, 5, 0.15);
+}
+:root[data-theme="dark"] .dd-timecard-day.dd-timecard-today .dd-timecard-day-date {
+  background: rgba(242, 203, 5, 0.16);
+}
+#dd-timecard-done {
+  display: block;
+  margin: 1rem auto 0;
+}
+
+/* === Stats popup === */
+.dd-stats-card {
+  max-width: 520px;
+  width: 100%;
+}
+.dd-stats-tabs {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.dd-stats-tab {
+  padding: 0.35rem 0.9rem !important;
+  border: 2px solid var(--dd-sky) !important;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--dd-sky);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+  box-shadow: none !important;
+}
+.dd-stats-tab:hover,
+.dd-stats-tab:focus,
+.dd-stats-tab:active {
+  box-shadow: none !important;
+  transform: none !important;
+}
+.dd-stats-tab.is-active {
+  background: var(--dd-sky);
+  color: #fff;
+}
+.dd-stats-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin: 0.6rem 0 0.2rem;
+}
+.dd-stats-nav-btn {
+  flex-shrink: 0;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--dd-sky) !important;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--dd-sky);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+.dd-stats-nav-btn:hover,
+.dd-stats-nav-btn:focus,
+.dd-stats-nav-btn:active {
+  box-shadow: none !important;
+  transform: none !important;
+}
+.dd-stats-period {
+  font-weight: 700;
+  color: var(--dd-orange);
+  text-align: center;
+  font-size: 0.95rem;
+  min-width: 0;
+}
+.dd-stats-scroll {
+  max-height: 55vh;
+  overflow-y: auto;
+  margin-top: 0.75rem;
+}
+.dd-stats-section {
+  margin-bottom: 1rem;
+}
+.dd-stats-section:last-child {
+  margin-bottom: 0;
+}
+.dd-stats-section-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--dd-orange);
+  border-bottom: 2px solid var(--dd-amber);
+  padding-bottom: 0.25rem;
+  margin-bottom: 0.4rem;
+}
+.dd-stats-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 0.95rem;
+}
+.dd-stats-row:last-child {
+  border-bottom: none;
+}
+.dd-stats-row-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dd-stats-empty {
+  font-size: 0.85rem;
+  color: #777;
+  padding: 0.3rem 0;
+}
+.dd-stats-shift-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.6rem;
+}
+@container app-col (min-width: 420px) {
+  .dd-stats-shift-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+.dd-stats-shift-card {
+  border: 1px solid #eee;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.dd-stats-shift-title {
+  background: #f7f3ea;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 2px solid var(--dd-amber);
+}
+.dd-stats-shift-field {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.82rem;
+  border-bottom: 1px solid #f5f5f5;
+}
+.dd-stats-shift-field:last-child {
+  border-bottom: none;
+}
+.dd-stats-shift-field-label {
+  color: var(--dd-orange);
+  font-weight: 700;
+}
+:root[data-theme="dark"] .dd-stats-tab {
+  background: transparent;
+  border-color: var(--dd-amber) !important;
+  color: var(--dd-amber);
+}
+:root[data-theme="dark"] .dd-stats-tab.is-active {
+  background: var(--dd-amber);
+  color: #1f2227;
+}
+:root[data-theme="dark"] .dd-stats-nav-btn {
+  background: transparent;
+  border-color: var(--dd-amber) !important;
+  color: var(--dd-amber);
+}
+:root[data-theme="dark"] .dd-stats-row,
+:root[data-theme="dark"] .dd-stats-shift-field {
+  border-bottom-color: #3a3f47;
+  color: #e8e8e8;
+}
+:root[data-theme="dark"] .dd-stats-empty {
+  color: #999;
+}
+:root[data-theme="dark"] .dd-stats-shift-card {
+  border-color: #3a3f47;
+}
+:root[data-theme="dark"] .dd-stats-shift-title {
+  background: #262a31;
+}
+
+/* === Dark mode === */
+/* Toggled via #darkModeToggle in the footer, which sets data-theme="dark"
+   on <html> and remembers it in localStorage. Covers this app's own
+   surfaces (header/footer, cards, table, form fields, both modals) — the
+   handful of un-classed elements PaperCSS styles on its own may not all
+   follow along. */
+:root[data-theme="dark"] body {
+  background: var(--dd-navy);
+  color: #e8e8e8;
+}
+:root[data-theme="dark"] #appHeader,
+:root[data-theme="dark"] #appFooter,
+:root[data-theme="dark"] .card,
+:root[data-theme="dark"] .dd-confirm-card {
+  background-color: #1f2227;
+  color: #e8e8e8;
+  border-color: #3a3f47;
+}
+/* The awning stripe glows like the neon signage in the night shot — both
+   shadows have to be declared together, since a box-shadow value replaces
+   the base rule's rather than adding to it. */
+:root[data-theme="dark"] #appHeader {
+  box-shadow: 0 4px 0 0 var(--dd-yellow), 0 0 14px rgba(242, 203, 5, 0.3);
+}
+:root[data-theme="dark"] #appFooter {
+  box-shadow: 0 -4px 0 0 var(--dd-yellow), 0 0 14px rgba(242, 203, 5, 0.3);
+}
+:root[data-theme="dark"] .card {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4), 0 0 10px rgba(242, 203, 5, 0.12);
+}
+:root[data-theme="dark"] header h1 {
+  color: var(--dd-yellow);
+  text-shadow: 0 0 10px rgba(242, 203, 5, 0.45);
+}
+:root[data-theme="dark"] .dd-confirm-card h4,
+:root[data-theme="dark"] .card strong {
+  color: var(--dd-yellow);
+}
+:root[data-theme="dark"] #deliveriesSection table,
+:root[data-theme="dark"] #deliveriesSection th,
+:root[data-theme="dark"] #deliveriesSection td {
+  color: #e8e8e8;
+}
+:root[data-theme="dark"] #deliveriesSection tbody td {
+  border-bottom-color: #333;
+}
+:root[data-theme="dark"] #formSection #entry-form input[type="text"],
+:root[data-theme="dark"] #formSection #entry-form input[type="number"],
+:root[data-theme="dark"] #formSection #entry-form input[type="date"],
+:root[data-theme="dark"] #formSection #entry-form select,
+:root[data-theme="dark"] #formSection #entry-form textarea,
+:root[data-theme="dark"] .ddb-input {
+  background-color: #262a31;
+  color: #e8e8e8;
+  border-color: #3a3f47;
+}
+:root[data-theme="dark"] .dd-delivery-street-select {
+  background-color: #262a31;
+  color: #e8e8e8;
+  border-color: var(--dd-amber);
+}
+:root[data-theme="dark"] .hamburger-btn,
+:root[data-theme="dark"] .dark-toggle-btn,
+:root[data-theme="dark"] .hamburger-menu,
+:root[data-theme="dark"] .hamburger-menu .menu-item {
+  background-color: #1f2227;
+  color: #e8e8e8;
+  border-color: #3a3f47;
+}
+:root[data-theme="dark"] .hamburger-btn,
+:root[data-theme="dark"] .dark-toggle-btn {
+  border-color: var(--dd-amber);
+}
+:root[data-theme="dark"] .hamburger-menu .menu-item:hover,
+:root[data-theme="dark"] .hamburger-menu .menu-item:focus-visible {
+  background-color: #2b3038;
+}
+:root[data-theme="dark"] .hamburger-btn span {
+  background-color: #e8e8e8;
+}
+:root[data-theme="dark"] .dd-confirm-card ul li {
+  border-bottom-color: #3a3f47;
+}
+:root[data-theme="dark"] .street-scroll {
+  color: #e8e8e8;
+}
+/* .partial-tip-marker, .cash-tip-marker, and .cash-amount need no dark
+   override — they're colored with var(--dd-orange), which already
+   re-themes itself. */

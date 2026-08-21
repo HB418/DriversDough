@@ -1,0 +1,162 @@
+/* Driver's Dough Box Modal — reusable "pizza box" modal component,
+   modeled on the Villa Pizza box: a red banner top and bottom, the
+   pizza-slice mark on the left, brand wordmark on the right.
+   Used by js/dd-box-modal.js. Hidden by default; add .is-open to show. */
+:root{
+  --dd-red:#D32E2E;
+  --dd-bg:#fff;
+  --dd-text:#D32E2E;
+  --rail-mx:clamp(8px,4vw,18px);    /* horizontal inset for rails + body — snug to the card edge */
+  --gap:clamp(10px,3vw,18px);
+  --radius:6px;
+  --shadow:0 10px 24px rgba(0,0,0,.18);
+  --font-sans: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,'Noto Sans',sans-serif;
+  --font-script: 'Pacifico','Brush Script MT','Segoe Script','Dancing Script',cursive,ui-rounded;
+}
+
+/* Overlay: hidden until JS adds .is-open */
+.ddb-overlay{
+  position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.38); padding:clamp(8px,4vw,24px); z-index:9999;
+}
+.ddb-overlay.is-open{ display:flex; }
+
+/* Card — width scales with the viewport; height follows its content
+   (a forced square left too much empty air in the body on large screens) */
+.ddb-card{
+  width:min(92vw,520px);
+  max-height:90svh;
+  overflow-y:auto;
+  background:var(--dd-bg); color:var(--dd-text);
+  border-radius:var(--radius); box-shadow:var(--shadow);
+  display:grid;
+  grid-template-rows:auto auto auto auto auto auto;  /* top rail, body, bottom rail, extra info, prompt input, actions */
+  gap:clamp(6px,2vw,12px);
+  padding:clamp(12px,3vw,24px);
+}
+
+/* Rails: thin, near-edge-to-edge red banners (see the box top/bottom bars) */
+.ddb-rail{ display:flex; justify-content:center; margin:0; }
+.ddb-rail-inner{
+  background:var(--dd-red); color:#fff; border-radius:2px;
+  margin-inline: var(--rail-mx);     /* single source of truth for inset */
+  padding:clamp(4px,1.4vw,7px) clamp(6px,2vw,10px);
+  text-align:center; font-family:var(--font-sans);
+  font-weight:700; letter-spacing:.01em; line-height:1.15;
+  font-size:clamp(13px,3.6vw,19px);
+  flex: 1 1 auto;                 /* stretch to guides */
+  box-sizing: border-box;         /* padding stays inside width */
+}
+
+/* Body: pizza slice on the left, brand wordmark filling the rest — the
+   info sits below the rails, never overlapping them. */
+.ddb-body{
+  position:relative;
+  margin-inline: var(--rail-mx);
+  padding-block: clamp(10px, 3vw, 20px);
+  display:flex;
+  align-items:center;
+  gap: clamp(4px, 1.5vw, 8px);
+  min-width: 0;   /* let this grid row shrink below its children's natural size */
+}
+
+.ddb-slice{
+  flex: 0 0 auto;
+  width: clamp(58px, 21vw, 128px);
+  height: auto;
+  object-fit: contain;
+  border: none;        /* PaperCSS puts a hand-drawn border+radius on every <img> — override it */
+  border-radius: 0;
+}
+
+/* Brand text: fills the space to the right of the slice, scales with the card.
+   js/dd-box-modal.js measures each line's actual rendered width and sets its
+   font-size in px so it exactly fills this column (same right edge as the red
+   rails) — that's the only way to get this right for whatever font actually
+   loads (Bahnschrift vs. a fallback), rather than guessing a CSS percentage
+   tuned to one font's metrics. The clamp() values below are just the
+   pre-JS/no-JS starting point so nothing flashes huge or tiny for a frame. */
+.ddb-brand{
+  flex: 1 1 auto;
+  min-width: 0;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  text-align:left;
+}
+.ddb-drivers{
+  font-family:'Bahnschrift','Arial Narrow','Roboto Condensed', var(--font-sans);
+  font-weight:700; letter-spacing:0;
+  font-size:clamp(20px, 9vw, 48px); line-height:1; color:var(--dd-text);
+  white-space:nowrap;
+}
+.ddb-dough{
+  font-family:var(--font-script);
+  font-size:clamp(20px, 9vw, 48px); line-height:1.1; color:var(--dd-text);
+  white-space:nowrap;
+}
+
+/* Extra info: plain text below the bottom rail — not another red bar —
+   the way the real box prints its address/phone under the second red
+   banner. Used for anything too long for the rail pill, like a list of
+   missing fields. Hidden entirely when there's nothing to show. */
+.ddb-extra{
+  margin-inline: var(--rail-mx);
+  text-align:center;
+  font-family:var(--font-sans);
+  font-weight:600;
+  color:var(--dd-red);
+  font-size:clamp(13px,3vw,15px);
+  line-height:1.4;
+  white-space:pre-line;   /* lines passed in with \n render as real line breaks */
+}
+
+/* Prompt field: a plain amount entry, shown only when show() is called
+   with prompt:true (e.g. "how much of the tip is cash"). */
+.ddb-input{
+  margin-inline: var(--rail-mx);
+  padding:.5rem .6rem;
+  font:700 1.15rem var(--font-sans);
+  text-align:center;
+  color:var(--dd-text);
+  background:#fff;
+  border:2px solid var(--dd-red);
+  border-radius:6px;
+  box-sizing:border-box;
+  box-shadow:none;   /* PaperCSS puts a hand-drawn shadow on every input — override it */
+}
+
+/* Attention state: js/dd-box-modal.js adds this to the bottom rail when a
+   message is being shown again after the user dismissed it without acting
+   on it (e.g. closed "TAP A ROW FIRST" without tapping a row) — the blink
+   is what catches their eye the second time. */
+.ddb-rail-inner.ddb-blink{
+  animation: ddb-blink 2.4s ease-in-out infinite;
+  border: 2px solid var(--dd-red);
+}
+@keyframes ddb-blink{
+  0%, 100% { background: var(--dd-red); color:#fff; }
+  50%      { background: #fff; color:var(--dd-red); }
+}
+@media (prefers-reduced-motion: reduce){
+  .ddb-rail-inner.ddb-blink{
+    animation: none;
+    background: #fff; color:var(--dd-red);
+  }
+}
+
+/* Actions — normally just OK. For a yes/no confirm (e.g. End Night),
+   js/dd-box-modal.js reveals #ddb-cancel and can mark OK as the "danger"
+   (destructive) action by adding .ddb-btn-danger. */
+.ddb-actions{ display:flex; justify-content:center; gap:.6rem; margin-top: var(--gap); }
+.ddb-btn{
+  background:#fff; color:var(--dd-red); border:2px solid var(--dd-red);
+  padding:.45rem .8rem; border-radius:6px; font:700 1rem var(--font-sans);
+  box-shadow:none; cursor:pointer;   /* PaperCSS puts a hand-drawn shadow on every <button> — override it */
+}
+.ddb-btn.ddb-btn-danger{
+  background:var(--dd-red); color:#fff;
+}
+#ddb-cancel.ddb-btn{
+  display:none;   /* shown only when show() is called with cancelText */
+}

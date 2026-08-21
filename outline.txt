@@ -1,0 +1,439 @@
+Overview
+
+This is a website that tracks a user's deliveries for the night.  It displays all 
+deliveries, the breakdown of how many deliveries for each delivery.  It 
+calculates the total delivery fee.  It keeps track of all tips. Allows users to 
+punch in and out to keep track of hours and also how much money the user owes the 
+house at the end of the night.
+
+This Should be a mobile first, fully responsive progressive web app.  It should be 
+built using PaperCSS. Here is a link to the documentation: https://www.getpapercss.com/docs/.  
+Please completely read through it until you thoroughly understand it.  Here is the link for 
+PWA documentation: https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps.  
+Please read it and thoroughly understand it.  
+
+The project should use HTML, PaperCSS/CSS, Typescript/JavaScript, and anything else you deem 
+necessary. Please thoroughly read through all documentation for the languages before beginning 
+the project. For storage, localStorage and indexedDB should be used.  Data will also be downloaded 
+and updated in a workbook. 
+
+There will be two images, a favicon, and an icon will be included in this project.  The project will 
+have a light mode and dark mode. One image (day image) will be for light mode.  The other image 
+(night image) will be for dark mode. The following is an outline of the project:
+
+
+HTML aka “The Bones”(with maybe a little CSS.)
+
+    Header
+        At the top of the Page In the header will be the images.  In light mode will be VillaAndCarPixarDay.png.  
+        In dark mode will be VillaAndCarPixarNight.png
+
+        Directly underneath the image in the Header will be the actual Header/Title H1 element “Driver’s Dough”.  
+
+    Body
+        At the top of the body underneath the header are two buttons. They share a row and are evenly spaced and centered.  
+        One is named “Add Entry” the other is named “Edit Entry”
+
+        Next is a card with a table on it.  The following are headers and can be abbreviated as long as it is still 
+        easy to understand what it stands for.
+
+            Number - this is a count for the number of entries and to identify an entry
+            Street - this is the address of the delivery
+            Type - This is the type of order there are three type
+            Cash
+            Online CC (credit card for online order)
+            Phone CC (credit card over the phone)
+            Total - This is the total on the receipt that is really only needed for cash orders.  
+            Tip - This is what the user received in tip for the delivery
+            Fee - This is what was charged as a delivery fee for the order.  The user gets a portion of it.
+
+        Next is a header for the next section called “Calculations”
+
+        Then a card This will have labels pinned to the left with their totals (start at zero an increment by 1) 
+        pinned to the right.  It is a count of how many of each delivery fee type There are seven labels.  This 
+        should be implemented using an unordered list.
+
+            $2.25 Deliveries
+            $4.00 Deliveries
+            $5.00 Deliveries
+            $6.00 Deliveries
+            $7.00 Deliveries
+            $8.00 Deliveries
+            Total Deliveries    
+
+        Then another card.  This card keeps track of how much the driver has earned from each delivery fee type.  
+        There are 7 labels for this one as well.  Label pinned left, value pinned right (in dollar format). This
+        should be implemented using an unordered list.
+
+            $2.25 @ 1.50ea
+            $4.00 @ 3.25ea
+            $5.00 @ 4.25ea
+            $6.00 @ 5.25ea
+            $7.00 @ 6.25ea
+            $8.00 @ 7.25ea
+            Total Value of Fees
+
+        The next card has three labels pinned to the left with their matching totals (in dollar format) pinned to the right.  
+        This should be implemented using an unordered list. The labels are:
+
+            CC gratuity - this is the total of all tips that were on online CC or phone CC
+            Delivery Fees - This is the total value of fees from above
+            Total from House - This is the total of CC gratuity and Delivery Fees
+
+        The final card has four labels pinned to the left with their values in dollar format pinned to the right. This should be implemented
+        using an unordered list. The labels are:
+
+            Total from House - This is pulled from the previous card.
+            Cash Gratuity - This is a total of all tips that are cash only
+            Night Total - This is a total of Cash Gratuity and Total from House
+            Total Cash Owed - This is a total of the totals of all cash orders.  The amount the user owes at the end of the night
+
+        (hidden) another card that has form for entering a new delivery.  This form will include the following:
+
+            Text input with the label of “Address”
+
+            Sharing a row are two drop down menus evenly spaced and centered:
+                One labeled "Delivery Fee" with the following options:
+
+                    $2.25
+                    $4.00
+                    $5.00
+                    $6.00
+                    $7.00
+                    $8.00
+
+                The other labeled "Order Type" with the following options:
+                    Cash
+                    Phone CC
+                    Online CC
+
+            The next row is shared by two numerical input boxes evenly spaced and centered. They are
+
+                Gratuity - the amount of tip on the slip
+                Order Total - the total on the slip
+
+            Then there are two check boxes. One check box or no checkboxes can be selected at a time. They are:
+
+                Cash Tip
+                Partial Cash
+
+            Finally there are two buttons that share a row evenly spaced and centered.  They are:
+
+                Submit - clears and submits the form
+                Cancel - clears and closes the form
+
+        (hidden) Custom Modal. It should be heavily modeled after the pizza box in the image pizzaBox.jpg.  What it says 
+        and how you interact changes depending on why it is triggered. ** All modals/prompts/alerts should use this**.
+
+        (hidden) Custom Number pad.  This should consist of 4 rows of buttons evenly spaced and centered they are:
+            1st row: Buttons 1, 2, 3
+            2nd row: Buttons 4, 5, 6
+            3rd row: Buttons 7, 8, 9
+            4th row: Buttons <-, 0, Ok
+
+    Footer
+
+        The elements in this section should be centered vertically but not horizontally.  They are
+
+            Toggle switch - should be pinned right.  Toggles between light mode and dark mode
+            Hamburger Menu -should be pinned left.  Has the following options:
+
+                Punch In/Out
+                    A custom modal that allows the user to keep track of hours
+                End Night
+                    Starts the end night process
+                Maps
+                    Three interactive maps with a grid system.  They are neighborhood trailer parks that don’t have streets 
+                    and numbers. Just numbers that start at 1 and go on. The numbers are not assigned per street.  The grid system 
+                    will help find the numbers in the park.  For now use https://picsum.photos/2560/1440 for the place holders The 
+                    maps names are:
+
+                        Amazon Campground
+                        Colonial Village
+                        Crystal Springs
+
+                Building Codes
+                    List of current known codes for building access.
+                Statistics
+                    This brings the user to a page that lists statistics based on the data in the workbooks.
+                Magnifier
+                    This links to an external app.  Need to determine the best magnifier/flashlight app to use for 
+                    android and one to use for Apple.
+                Help
+                    Links to either the Readme file or an html page with instructions on how to use the site.
+
+TypeScript and JavaScript aka “The Muscle”
+	
+    Header
+        No script needed
+    
+    Body
+        Add Entry button
+            This button hides everything and displays the form for entering a new delivery.
+        Edit Entry button
+            This button brings up the custom modal.  It should ask the user to input the number of the delivery they
+            would like to edit.  There should be a submit and cancel button.  Cancel button will bring user back
+            to home screen. Clicking submit should repurpose the current modal to display a dropdown menu with the 
+            options of:
+                
+                Delete
+                Street
+                Order Type
+                Order Total
+                Tip
+                Fee
+            
+            On this modal there should be an submit button and a back button.  The back button should take the user back 
+            to the modal with numerical input for choosing a delivery to edit.  The submit button does one of two things:
+
+                If Delete is chosen:  
+                    The modal should be repurposed again.  This time as confirmation.  It should inform 
+                    the user that it will permanently delete the record.  If they just want to edit they should do so as 
+                    deleting will remove the timestamp and you will have inaccurate hourly stats if you reenter the order with 
+                    the current timestamp. There should be an OK button and a Back button on the Modal.  Clicking Ok will remove
+                    the record and shift the Number for the deliveries that would be affected accordingly. 
+                
+                If one of the others is chosen :
+                    The modal should be repurposed again.  This time asking for the new information.
+                        If street is selected a text input should be shown
+                        else if order type is selected It should have a drop down menu with the the options of Cash, Phone CC, 
+                            and Online CC
+                        else if fee is selected a drop down menu with the options of $2.25, $4.00, $5.00, $6.00, $7.00, $8.00
+                            should appear.
+                        else a numerical input box should appear for the correct dollar amount to be entered.  The decimal place
+                            should automatically appear as numbers are entered keeping the number at two decimal places. When the 
+                            input box is clicked on, the custom number pad should appear in a position where the input box is visible
+                            as well as the complete number pad.
+                    There should be a submit button and a back button on this modal.  The back button will bring the user back to the previous
+                    modal to choose a different field to edit or delete the whole entry.  If they click submit the modal should be repurposed into 
+                    a confirmation modal.  It should display what the user entered and ask if it is correct.  There should be an ok button and a 
+                    back button.  The back button brings the user back to the previous modal to enter the correct information. The Ok button saves 
+                    the information and updates the delivery appropriately. However, there are two additional considerations:
+
+                        if tip was selected:
+                            After the amount entered was submitted The modal should again be repurposed to ask if any of the tip is cash. There 
+                            should be two check boxes to do this.  One is labeled no. The other yes.  If yes is checked a numerical input should 
+                            appear with a label of "How much?" The decimal point should automatically appear in the text input.  it should keep
+                            it to two decimal places for correct dollar amount. There should be a submit and cancel button on the modal. That amount
+                            should be added to cash tip totals.  The amount should also be subtracted from the initial amount entered and that total 
+                            should be saved towards cc gratuity.
+                        if order type is changed from cash to anything else:
+                            After it was submitted the modal should again be repurposed to ask the user if any of the tip amount is cash.  There 
+                            should be a yes check box and a no checkbox.   If yes is checked a numerical input should appear with a label of 
+                            "How much?" The decimal point should automatically appear in the text input.  it should keep it to two decimal places 
+                            for correct dollar amount. There should be a submit and cancel button on the modal. That amount should be added to cash 
+                            tip totals.  The amount should also be subtracted from the tip amount already stored for that delivery and that total 
+                            should be saved towards cc gratuity.
+
+        Card with Delivery Table. 
+            The majority of this table should be implemented through the data that is saved from the data in the add entry form. I would imagine the
+            data from the from will be stored in a delivery object. Each header on the table corresponds with a field on the order entry form.  So
+            filling the table should be easy from an array of delivery objects.
+
+        Next is the header for the next section called "Calculations"
+            This does not require script
+
+        The card that calculates the total number of deliveries. 
+            Six of the Seven labels can be calculated when submitting the new delivery entry form.  It is a matter of a simple check of the submitted
+            data to see which one of the six delivery fees is used on the delivery form entry.  There should be a variable for each one of the six 
+            fee amounts.  What ever delivery fee is submitted for the entry the corresponding variable should += 1. That variable is the value 
+            displayed with the corresponding label on the card. 
+
+            The last label "Total Deliveries" is simply the total of the other six labels. 
+
+        The next card shows the value of the amount earned for each fee amount.  
+            This is calculated by taking the total amount of deliveries for each fee amount and multiplying it by the (fee amount - .75).  Therefore:
+                $2.25 is calculated as $1.50
+                $4.00 is calculated as $3.25
+                $5.00 is calculated as $4.25
+                $6.00 is calculated as $5.25
+                $7.00 is calculated as $6.25
+                $8.00 is calculated as $7.25
+            Total Value of Fees is a sum of all delivery fees entered. 
+
+        The next card contains the labels CC gratuity, Delivery Fees, and Total Value from House.
+            CC gratuity - This is calculated by running through the array of deliveries and += every delivery that has a cc tip to a variable.
+            Delivery Fees - This is calculated the same way as cc gratuity, but with the delivery fees
+            Total from House - This is simply CC Gratuity + Delivery Fees
+        
+        The final visible card contains the totals of the night.  They are Total from House, Cash Gratuity, Night Total, and Total Cash Owed
+            Total from House - this is from the previous card.  It's the total fo CC Gratuity + Delivery Fees
+            Cash Gratuity - this is calculated by going iterating through the array and += all cash tips.  including the cash portion of Partial
+                            cash tips.
+            Night Total - This is simply Total from House + Cash Gratuity.  (It is the amount of money the user made for the shift)
+            Total Cash Owed - This is calculated by iterating through the array of objects and += the order total for cash orders only. This is
+                              the amount the user owes back to the business.
+
+        (hidden) This is the card that contains the form for entering new deliveries. This becomes visible when the user presses the add entry 
+        button. I believe the best way to handle the data is to put it into a delivery object. This is what the form contains.
+            Address text input
+                no special script needed for this.
+            Delivery Fee drop down menu
+                no special script needed for this
+            Order type drop down menu
+                If cash is selected from the menu then the user changes is to any of the other options, the cash tip and partial cash tip check
+                boxes need to become unchecked.  
+                If either of the credit card options are selected, then changed to Cash.  The partial cash check box needs to become unchecked as
+                it is not possible to have a cc tip at that point.
+            Gratuity numerical input
+                This should be numbers only.  It should automatically have two decimal places and as the user enters numbers they move from right 
+                to left.
+            Order Total numerical input
+                This should be numbers only.  It should automatically have two decimal places and as the user enters numbers they move from right
+                to left.
+            Cash Tip and Partial Cash check boxes
+                only one of these can be checked at a time. They can be unchecked.  Is cash is selected from the order type drop down menu and it is 
+                changed ensure these checkboxes are unchecked.  
+            Submit button
+                This creates the delivery object and enters the object into the array.  Upon submitting the user should receive a custom modal asking
+                them to confirm the information they have entered.  There should be two buttons, confirm and back.  They do exactly what they say they
+                do.
+            Cancel button
+                This clears the form and closes it, returning the user to the home screen.
+        
+        (hidden) Custom Modal modeled after pizzaBox.jpg
+            I can not specify code as it will be specific to the instance it is used.  I have tried to explain how it should be implemented as the 
+            use cases are introduced. All modals in this program should use this design.  If you have any questions please ask. 
+
+        (hidden) Custom Number pad.  This should consist of 4 rows of buttons evenly spaced and centered they are:
+            1st row: Buttons 1, 2, 3
+            2nd row: Buttons 4, 5, 6
+            3rd row: Buttons 7, 8, 9
+            4th row: Buttons <-, 0, Ok
+            This number pad should pop up,be visible ,but unobtrusive whenever a numerical input field is selected. The numbers enter their 
+            corresponding values.  The back arrow deletes the right most number entered.   Ok closes the number pad.  However, the number pad 
+            can be reopened by selecting the numerical input again.
+        
+    Footer
+        Toggle switch
+            This script should toggle light mode and dark mode
+        Hamburger Menu
+            Punch In/Out
+                This should use the custom modal.  When it pops up it should check localStorage to see if the user has punched in already.  If 
+                they have not.  It should ask the user if they want to punch in.  If they have, then it should ask the user if the want to punch 
+                out.  There are two buttons, yes and no.  no closes the modal.  yes Should save a timestamp to localStorage under whichever use
+                case it was and then closes the modal.
+            End Night
+                This should bring up the custom modal to confirm if the user would like to submit the data to the workbooks and clear the table
+                of deliveries. Two buttons, confirm and cancel, they both do what they say.
+                    When the confirm button is pushed the data needs to be downloaded and saved into workbooks.  I'm not sure the best way to
+                    handle this, but I want data saved by the week, month, and year. Based of these sheets should be created with stats based
+                    off of the data saved.  Stats to include
+                    tips/hr 
+                    fees/hr 
+                    total/hr
+                    deliveries/hr
+                    When it gets broken down into months and years it should show averages for each of those for every hour of your shift.
+                    total tips per week, month, year
+                    total fees, per week, month, year
+                    average tips+fees/hr over all that time.
+                    how many deliveries you've take per week, month, year.
+                    The total of order totals per week, month year.
+                    Any other stats that you think would be beneficial or interesting to see.
+            Maps
+                these are three maps that I would like displayed individually. For now use the placeholder given.  I do want a grid placed over
+                the map.  There should be numerical text input.  The user will enter a house number and then they will be brought to the correct
+                location on the map. These are maps of trailer parks. They do not number per street.  They do it per park, which make homes hard 
+                to find. 
+            Building Codes
+                This will just be a custom modal that pops up with the current know building codes for our deliveries.  Just one button named OK.
+                this close the modal.
+            Statistics.  
+                I wanted to make this an interactive stats page based off of the info in workbooks.  I wanted them to be able to change time 
+                periods too.  That way they could see if different years were better, if different holidays affected business, how summer affects
+                business.  How the school year and school vacations affect it.  Your input would be greatly appreciated on implementation.
+            Magnifier
+                *note  I need your help to determine what the most popular free magnifying glass/ flashlight app is for both apple and android or 
+                would it be better to ask them access one of their choosing?  Again your input is greatly appreciated in the implementation. 
+                This link should check to see what OS the user is using.  It should then check to see if the appropriate app is installed.
+                    if it is open it.
+                    else open a custom modal that asks the user if they would like to install the app on their phone.  Their should be two 
+                    buttons, yes and no.  No closes the modal and brings the user back to the home screen.  Yes brings the user to their app stored
+                    to download it. 
+            Help
+                This just brings the user to either the readme.md file or an html file with instructions on use of the site. 
+
+CSS - I want to use PaperCSS as much as possible.  Would SASS be worth using in this project? In the img folder there is another folder called
+    driversDoughColors. In this folder are screenshots of color.adobe and the images that I want to use in the header.  There are a variety of 
+    themes and color codes that I want to use in the project.   Other colors outside of these can be used.  However I would like at least one theme
+    each for dark mode and light mode.   I'm leaning towards DayDark.png for light mode.   For dark mode either NightBright.png or NightColorful.png
+    I'm leaning more towards NightBright.png.  I would greatly appreciate your opinion on this as well. They key is that the color scheme is cohesive.
+    I want lots of depth and elevation in this site.  multiple levels if possible. In dark mode I do not want it too dark as the elevation does not 
+    show up as well.  Instead of blacks for backgrounds and footers use dark grays please.  Everything on this site should be evenly spaced, mobile
+    first, and fully responsive, unless otherwise noted. 
+
+    Header -along with the footer this should have the most elevation.  In light mode, the background should be bright white.  Other than the image
+    it holds, It should have the most elevation on the page.  Extreme elevation, crank it!  In dark mode It should be the brighter of the dark 
+    colors.  Extreme elevation, crank it!
+
+        The image used in the header for both light and dark mode should show elevation.  Not as excessive as header and footers, but it should be
+        noticeable. The header image for light mode is VillaAndCarPixarDay.png.  Dark mode should use VillaAndCarPixarNight.png.
+
+        The Header should be an H1 element.  It should utilize PaperCSS fonts.  For light mode the color should be one of the darker hues.  In dark
+        mode it should be one the lightest hues. The title is "Driver's Dough"
+
+    Body - The background of the body should be off-white in light mode.  In dark mode the It should be a darker shade of the gray used in the 
+           header and footer. 
+
+           The first row has the two buttons evenly spaced and centered.  These buttons are named Add Entry and Edit Entry.  These buttons should 
+           have the same background color as the header and footer.  The font and the border should utilize the same colors.  In light mode I was 
+           thinking of one of the light colors.  In dark mode it should be the lightest colors.  The buttons should have lots of elevation, but 
+           not as much as the header and footer.  This is because when the page scrolls I want the feeling of it going under the header and footer.
+
+           Next is the card with the table displaying all of the deliveries that have been entered. This should have the same colored background as
+           the buttons, header, and footer.  It should have the same elevation as the buttons. In dark mode it should have a light colored border.  
+           I haven't decided if it should share the same border color as the buttons or if all the cards should have their own matching border color.
+           Your input is appreciated. Every other delivery listed should have a slightly different shade of background color so that the deliveries are
+           easy to distinguish from each other.  Also when a cash order is entered, it should have a notable background color so that they can 
+           quickly and easily be picked out.
+
+           Next is the Header for the next section of cards.  It should be an h2 element and use the same color scheme as the h1 element in the 
+           header.
+
+           The next four cards should all look the same.  They all utilize unordered list, but it should not look as such.  It should just look
+           organized.  The keys pinned left, the values pinned right.  The background colors should be the same as the buttons.  They should share
+           the same elevation as the buttons. In dark mode the cards should have a border as discussed previously.  
+
+           (hidden)  It contains the form for entering new deliveries. This should be styled the same as the other cards.
+           However all of the elements on the form should show extreme elevation.  They should all have noticeable borders. The buttons on this card
+           should be the colors of the borders.  They should also share the elevation level of the other elements. In light mode the borders should 
+           match, in dark mode the borders should match.
+
+           (hidden) This is the custom modal. As stated many time this should be heavily modeled after the pizza box in pizzaBox.jpg. It should use
+           the same red color in the image.  It should utilize the red bars and if the space is possible the pizza slice. The modals should look like
+           they have extreme elevation. Similar to the headers and footers. 
+
+           (hidden) This is the number pad which are a bunch of buttons. They should have elevation.  Similar to the buttons.  They should not have
+           the same color scheme as the others.  Feel free to style at your liberty. Using the color themes supplied in driversDoughColors folder
+           would be most optimal.  The buttons should have a styling to be cohesive with light mode and one to be cohesive with dark mode. What is 
+           your opinion on them have a very light colored translucent background with a dark font.  The border would match the background but be
+           bold and not transparent.  side note.  I was thinking of this being the option for the hamburger menu pop up.
+
+    Footer  - This should have the same color and elevation as the header. The two elements on here should be centered vertically but not 
+            horizontally.  The hamburger menu should be pinned left and the toggle switch should be pinned right.
+
+            Toggle Switch - pinned right. The background of the toggle switch should show lots of dept.  Extreme depth, like go goes down to the
+                            background of the body.  The knob should show elevation.  You at your liberty on the colors to use.  One version cohesive
+                            with light, one cohesive with dark.  using colors from the themes in driversDoughColors folder would be most optimal.
+            Hamburger menu - pinned left.  The color scheme should have version to match light mode and one fro dark mode.  It should show elevation
+                            to match the knob on the toggle switch. I was thinking it would look cool if the popup menu that appeared was a light colored
+                            background that is translucent.  It should have dark fonts.  The border should match the background but not be translucent. If
+                            need be you can hide things in the background when it pops up an make the visible when it goes away.  Again your opinion is 
+                            appreciated. 
+
+                            punch in/out
+                                uses the custom modal which my desires have already been established.
+                            End night
+                                uses the custom modal which my desires have already been established. 
+                            Maps
+                                At the moment I have no idea how to style this.  Use your liberty to style in a cohesive manner.
+                            Building Codes
+                                This should use the custom modal which my desires have already been established.
+                            Statistics
+                                this is totally left up to you as well as you are pretty much implement the html and js as you see fit.
+                            Magnifier
+                                This is a link to an outside app.  No styling is needed.
+                            Help page
+                                This is either the Readme.md which can't be styled or create the html and CSS for the help page as you see
+                                fit. 
+

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Driver's Dough Modal — Component Preview</title>
+  <link rel="stylesheet" href="css/dd-box-modal.css">
+  <style>
+    body { font-family: sans-serif; padding: 2rem; text-align: center; }
+    button.preview-trigger {
+      background: #D32E2E; color: #fff; border: none; border-radius: 6px;
+      padding: 0.6rem 1.2rem; font: 700 1rem sans-serif; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>Pizza-Box Modal Preview</h1>
+  <p>This is the reusable modal component from <code>js/dd-box-modal.js</code> —
+     the same one the main app uses for every prompt/alert.</p>
+  <button class="preview-trigger" id="preview-open" type="button">Show Modal</button>
+  <button class="preview-trigger" id="preview-open-confirm" type="button" style="background:#7a1f1f; margin-left:0.5rem;">Show Confirm (danger + cancel)</button>
+  <button class="preview-trigger" id="preview-open-prompt" type="button" style="background:#2f6b2f; margin-left:0.5rem;">Show Prompt (input)</button>
+
+  <div class="ddb-overlay" id="ddb-overlay" aria-hidden="true">
+    <div class="ddb-card" role="dialog" aria-modal="true" aria-labelledby="ddb-top-rail">
+      <div class="ddb-rail"><div class="ddb-rail-inner" id="ddb-top-rail">DELIVERY CONFIRMATION</div></div>
+      <div class="ddb-body">
+        <img class="ddb-slice" src="img/sliceIcon-crop.png" alt="Pizza slice">
+        <div class="ddb-brand">
+          <div class="ddb-drivers">DRIVER’S</div>
+          <div class="ddb-dough">Dough</div>
+        </div>
+      </div>
+      <div class="ddb-rail"><div class="ddb-rail-inner" id="ddb-bottom-rail">MISSING ADDRESS</div></div>
+      <div class="ddb-extra" id="ddb-extra"></div>
+      <input class="ddb-input" id="ddb-input" type="text" inputmode="decimal" autocomplete="off" style="display:none">
+      <div class="ddb-actions"><button class="ddb-btn" id="ddb-cancel" type="button">Cancel</button><button class="ddb-btn" id="ddb-ok" type="button">OK</button></div>
+    </div>
+  </div>
+
+  <script src="js/dd-box-modal.js"></script>
+  <script>
+    document.getElementById('preview-open').addEventListener('click', function () {
+      DD.modal.show({ top: 'DELIVERY CONFIRMATION', bottom: 'MISSING ADDRESS', okText: 'OK' });
+    });
+    document.getElementById('preview-open-confirm').addEventListener('click', function () {
+      DD.modal.show({
+        top: 'END NIGHT',
+        bottom: 'THIS CLEARS ALL DELIVERIES',
+        okText: 'End Night',
+        cancelText: 'Cancel',
+        danger: true,
+        onOk: function () { console.log('confirmed'); },
+      });
+    });
+    document.getElementById('preview-open-prompt').addEventListener('click', function () {
+      DD.modal.show({
+        top: 'PARTIAL CASH TIP',
+        bottom: 'HOW MUCH OF THE TIP IS CASH?',
+        prompt: true,
+        promptPlaceholder: '0.00',
+        okText: 'Enter',
+        cancelText: 'Cancel',
+        onOk: function (value) { console.log('entered', value); },
+        onCancel: function () { console.log('cancelled'); },
+      });
+    });
+  </script>
+</body>
+</html>
