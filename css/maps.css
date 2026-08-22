@@ -1,0 +1,383 @@
+/* css/maps.css
+   The Maps feature: a picker for the three saved properties, and a
+   full-screen Leaflet map (satellite imagery via Esri's free World_Imagery
+   tiles, same free/no-key tile source used in the flightlog-v2 mapping
+   base this was built from) with a Setup Mode for dropping numbered,
+   direction-line pins at house locations, plus a search-by-number bar.
+
+   The map view is a TRUE full-viewport overlay (position:fixed, its own
+   stacking context, NOT nested in #phoneColumn) rather than the usual
+   phone-width popup card every other overlay in this app uses — a map
+   benefits from every pixel of screen it can get, split-view column width
+   included, so this one deliberately breaks that pattern. */
+
+/* === Maps picker (phone-width popup, same family as every other list
+   popup) === */
+.dd-maps-picker-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #e6e6e6;
+  border-radius: 10px;
+  margin-bottom: 0.6rem;
+  cursor: pointer;
+  background: #fff;
+}
+.dd-maps-picker-item:last-child {
+  margin-bottom: 0;
+}
+.dd-maps-picker-item:hover {
+  border-color: var(--dd-amber);
+}
+.dd-maps-picker-name {
+  font-weight: 700;
+  color: var(--dd-orange);
+}
+.dd-maps-picker-address {
+  font-size: 0.85rem;
+  color: #777;
+}
+.dd-maps-picker-count {
+  font-size: 0.8rem;
+  color: #555;
+  margin-top: 0.1rem;
+}
+:root[data-theme="dark"] .dd-maps-picker-item {
+  border-color: #3a3f47;
+  background: #262a31;
+}
+:root[data-theme="dark"] .dd-maps-picker-item:hover {
+  border-color: var(--dd-amber);
+}
+:root[data-theme="dark"] .dd-maps-picker-address,
+:root[data-theme="dark"] .dd-maps-picker-count {
+  color: #b8b8b8;
+}
+
+/* === Full-screen map view === */
+#dd-map-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  flex-direction: column;
+  background: #fff;
+}
+#dd-map-overlay.is-open {
+  display: flex;
+}
+:root[data-theme="dark"] #dd-map-overlay {
+  background: var(--dd-navy);
+}
+
+.dd-map-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  background: #fff;
+  border-bottom: 3px solid var(--dd-amber);
+  flex-shrink: 0;
+}
+:root[data-theme="dark"] .dd-map-topbar {
+  background: #1f2227;
+  border-bottom-color: var(--dd-amber);
+}
+.dd-map-back-btn {
+  border: 1px solid var(--dd-sky);
+  background: #fff;
+  color: var(--dd-sky);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+:root[data-theme="dark"] .dd-map-back-btn {
+  background: transparent;
+  border-color: var(--dd-amber);
+  color: var(--dd-amber);
+}
+.dd-map-title {
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--dd-orange);
+  text-align: center;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 0.4rem;
+}
+.dd-map-setup-toggle {
+  border: 2px solid var(--dd-sky);
+  background: #fff;
+  color: var(--dd-sky);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.dd-map-setup-toggle.is-active {
+  background: var(--dd-sky);
+  color: #fff;
+}
+:root[data-theme="dark"] .dd-map-setup-toggle {
+  background: transparent;
+  border-color: var(--dd-amber);
+  color: var(--dd-amber);
+}
+:root[data-theme="dark"] .dd-map-setup-toggle.is-active {
+  background: var(--dd-amber);
+  color: #1f2227;
+}
+
+.dd-map-searchbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #f7f3ea;
+  flex-shrink: 0;
+}
+:root[data-theme="dark"] .dd-map-searchbar {
+  background: #262a31;
+}
+.dd-map-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+.dd-map-search-btn {
+  border: none;
+  background: var(--dd-orange);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.9rem;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.dd-map-search-msg {
+  font-size: 0.8rem;
+  color: var(--dd-red);
+  white-space: nowrap;
+}
+:root[data-theme="dark"] .dd-map-search-input {
+  background: #1f2227;
+  border-color: #3a3f47;
+  color: #e8e8e8;
+}
+
+#dd-map-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+#dd-map-canvas {
+  position: absolute;
+  inset: 0;
+}
+/* Recenter button: shown only once the user has panned away from their
+   own live-location dot while it was being followed. Sits above
+   Leaflet's attribution strip (bottom-right by default) with enough
+   clearance not to overlap it. */
+.dd-map-recenter-btn {
+  position: absolute;
+  right: 10px;
+  bottom: 56px;
+  z-index: 600;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: none;
+  background: var(--dd-orange);
+  color: #fff;
+  font-size: 1.3rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+.dd-map-recenter-btn.hide {
+  display: none;
+}
+/* PaperCSS applies a hand-drawn "paper" style to every <img> on the page
+   (border + heavy asymmetric corner-rounding). Leaflet's map is built
+   from many small tile <img> elements placed edge-to-edge — those
+   rounded corners eat into each tile, leaving visible gaps/misaligned
+   seams right where tiles meet (looked like a second, unwanted grid over
+   the satellite imagery). Reset styling for anything Leaflet renders
+   inside the map (tiles, markers) back to plain edge-to-edge images. */
+.leaflet-container img {
+  border: none !important;
+  border-radius: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  box-shadow: none !important;
+}
+/* A light reference grid drawn ON TOP of the whole map (imagery and pins
+   alike) — mix-blend-mode:difference inverts against whatever's under it,
+   so the same single white line stays visible over both bright and dark
+   patches of satellite imagery without needing separate light/dark art.
+   pointer-events:none so it never intercepts map taps/drags.
+   Temporarily turned off per request — the div and its JS hooks stay in
+   place, just not shown, so it's a one-line flip to bring back. */
+.dd-map-grid {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 500;
+  pointer-events: none;
+  mix-blend-mode: difference;
+  background-image:
+    repeating-linear-gradient(to right, rgba(255, 255, 255, 0.55) 0 1px, transparent 1px 40px),
+    repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.55) 0 1px, transparent 1px 40px);
+}
+
+/* === Pin marker (Leaflet divIcon contents) ===
+   The line rotates on its own (not the whole icon) so the number badge
+   always stays upright and readable no matter what direction the line
+   points. Both are centered on the exact same ground point. */
+.dd-pin-icon {
+  position: relative;
+}
+.dd-pin-line {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--dd-red);
+  transform-origin: center center;
+}
+.dd-pin-badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--dd-orange);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.75rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+/* Pending: the one pin actively being placed/adjusted in Setup Mode,
+   before Confirm locks it in — a distinct color so it's obvious which
+   pin is still editable versus already permanent. */
+.dd-pin-icon.is-pending .dd-pin-line {
+  background: var(--dd-sky);
+}
+.dd-pin-icon.is-pending .dd-pin-badge {
+  background: var(--dd-sky);
+  animation: dd-pin-pending-pulse 1.4s ease-in-out infinite;
+}
+@keyframes dd-pin-pending-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 0 0 rgba(85, 166, 217, 0.55); }
+  50% { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 0 6px rgba(85, 166, 217, 0); }
+}
+/* Search result: brief highlight pulse on a permanent pin, added/removed
+   by JS after a search match. */
+.dd-pin-icon.is-search-hit .dd-pin-badge {
+  animation: dd-pin-search-pulse 0.9s ease-out 2;
+}
+@keyframes dd-pin-search-pulse {
+  0% { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 0 0 rgba(242, 135, 5, 0.7); }
+  100% { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 0 14px rgba(242, 135, 5, 0); }
+}
+
+/* === Setup Mode bottom bar === */
+.dd-map-setup-bar {
+  flex-shrink: 0;
+  background: #f7f3ea;
+  border-top: 3px solid var(--dd-amber);
+  padding: 0.6rem 0.9rem calc(0.6rem + env(safe-area-inset-bottom, 0px));
+}
+:root[data-theme="dark"] .dd-map-setup-bar {
+  background: #262a31;
+}
+.dd-map-setup-instructions {
+  margin: 0 0 0.4rem;
+  font-size: 0.9rem;
+  text-align: center;
+}
+.dd-map-setup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+}
+.dd-map-setup-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--dd-orange);
+}
+.dd-map-setup-number {
+  width: 5rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+.dd-map-setup-rotation {
+  flex: 1;
+  min-width: 120px;
+}
+.dd-map-setup-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+.dd-map-setup-actions button {
+  flex: 1;
+}
+/* .dd-map-setup-row and .dd-map-setup-actions both set their own
+   display:flex above, which ties with the generic .hide{display:none}
+   utility in style.css on specificity — and since maps.css loads AFTER
+   style.css, the flex rule was winning the cascade, leaving these rows
+   visibly stuck open after Confirm/Save/Delete/Cancel even though the
+   "hide" class was correctly applied. Restate the override here, later
+   in this same file, so hiding always wins regardless of load order. */
+.dd-map-setup-row.hide,
+.dd-map-setup-actions.hide {
+  display: none;
+}
+#dd-map-setup-exit {
+  width: 100%;
+}
+:root[data-theme="dark"] .dd-map-setup-number {
+  background: #1f2227;
+  border-color: #3a3f47;
+  color: #e8e8e8;
+}
+
+/* Leaflet's own attribution control reads fine as-is; just keep it from
+   sitting under the iOS home-indicator safe area. */
+.leaflet-bottom {
+  margin-bottom: env(safe-area-inset-bottom, 0px);
+}

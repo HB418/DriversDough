@@ -31,7 +31,6 @@
   const menuTimeCard = document.getElementById("menuTimeCard");
   const menuStats = document.getElementById("menuStats");
   const menuHideImage = document.getElementById("menuHideImage");
-  const menuMaps = document.getElementById("menuMaps");
   const menuBackup = document.getElementById("menuBackup");
   const menuRestore = document.getElementById("menuRestore");
   const restoreFileInput = document.getElementById("restoreFileInput");
@@ -315,18 +314,7 @@
     if (e.key === "Escape" && hamburgerMenu?.classList.contains("is-open")) closeHamburgerMenu();
   });
 
-  // Maps isn't built yet — a short placeholder via the same pizza-box
-  // modal used everywhere else, so it doesn't feel out of place. Stats and
-  // Time Card ARE built — see their own sections below.
-  function showComingSoon(label) {
-    closeHamburgerMenu();
-    window.DD.modal?.show({
-      top: label.toUpperCase(),
-      bottom: "COMING SOON",
-      okText: "OK",
-    });
-  }
-  menuMaps?.addEventListener("click", () => showComingSoon("Maps"));
+  // Maps is now real — see js/maps.js, which wires up #menuMaps on its own.
 
   // === Backup / Restore ===
   // Everything this app stores lives in localStorage on this one device —
@@ -340,6 +328,7 @@
     "driversDoughPaneWidth",
     "driversDoughDarkMode",
     "driversDoughHideImage",
+    "driversDoughMaps",
   ];
 
   function backupData() {
@@ -918,17 +907,24 @@
     const totals = emptyStatsBucket();
     const byHour = {};
     for (let h = 0; h < 24; h++) byHour[h] = emptyStatsBucket();
+    const byDay = {}; // dateKey -> bucket, insertion order == date order
+    const byMonth = {}; // "YYYY-MM" -> bucket, insertion order == month order
     let totalMinutesWorked = 0;
 
     const cursor = startOfDay(startDate);
     const last = startOfDay(endDate);
     while (cursor <= last) {
       const key = toDateKey(cursor);
+      const monthKey = key.slice(0, 7);
       const day = statsHistory[key];
       if (day) {
+        if (!byDay[key]) byDay[key] = emptyStatsBucket();
+        if (!byMonth[monthKey]) byMonth[monthKey] = emptyStatsBucket();
         Object.keys(day).forEach((hourKey) => {
           addBucket(totals, day[hourKey]);
           if (byHour[hourKey]) addBucket(byHour[hourKey], day[hourKey]);
+          addBucket(byDay[key], day[hourKey]);
+          addBucket(byMonth[monthKey], day[hourKey]);
         });
       }
       const tcShifts = timeCard[key]?.shifts;
@@ -950,6 +946,8 @@
     return {
       totals,
       byHour,
+      byDay,
+      byMonth,
       lunch,
       dinner,
       hoursWorked: Math.round((totalMinutesWorked / 60) * 100) / 100,
@@ -1082,6 +1080,200 @@
     return `${h12} ${period}`;
   }
 
+  // --- Chart colors -------------------------------------------------
+  // Fixed-order categorical brand hues, validated for colorblind-safe
+  // adjacent contrast (each mode checked separately since a dark surface
+  // needs different lightness steps to stay readable). Used wherever
+  // bars/slices represent DIFFERENT NAMED THINGS (fee tiers, lunch vs
+  // dinner) so identity never depends on color alone -- every chart also
+  // prints its own labels.
+  const CHART_PALETTE = {
+    light: { blue: "#55A6D9", orange: "#F28705", aqua: "#1baf7a", yellow: "#D9A200", magenta: "#e87ba4", green: "#008300" },
+    dark: { blue: "#3D8FC7", orange: "#D97904", aqua: "#199e70", yellow: "#A88300", magenta: "#d55181", green: "#008300" },
+  };
+  const FEE_CHART_HUES = ["blue", "orange", "aqua", "yellow", "magenta", "green"]; // matches FEE_KEYS order
+  const LUNCH_DINNER_HUES = { light: ["#55A6D9", "#F28705"], dark: ["#3D8FC7", "#D97904"] };
+
+  function isDarkMode() {
+    return document.documentElement.getAttribute("data-theme") === "dark";
+  }
+  function feeChartColor(index) {
+    const mode = isDarkMode() ? "dark" : "light";
+    const hue = FEE_CHART_HUES[index % FEE_CHART_HUES.length];
+    return CHART_PALETTE[mode][hue];
+  }
+
+  function hexToRgb(hex) {
+    const m = hex.replace("#", "");
+    const n = parseInt(m.length === 3 ? m.split("").map((c) => c + c).join("") : m, 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+  function rgbToHex(r, g, b) {
+    const c = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+    return `#${c(r)}${c(g)}${c(b)}`;
+  }
+  function hexToHslArr(hex) {
+    let { r, g, b } = hexToRgb(hex);
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h, s;
+    const l = (max + min) / 2;
+    if (max === min) { h = s = 0; }
+    else {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h /= 6;
+    }
+    return [h * 360, s * 100, l * 100];
+  }
+  function hslToHex(h, s, l) {
+    s /= 100; l /= 100;
+    const k = (n) => (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+    return rgbToHex(f(0) * 255, f(8) * 255, f(4) * 255);
+  }
+  // Position-based ramp of n steps around one brand hue: the FIRST item in
+  // a sequence (earliest hour, lowest tip bucket, earliest day) reads
+  // lightest and the LAST reads darkest -- order carries the meaning, not
+  // each bar's own value, so color never re-encodes what the bar's length
+  // already shows. Same lightness band in both themes (40%-72% L) since
+  // that range stays legible against both a white and a near-black surface.
+  function ordinalRamp(baseHex, n) {
+    const [h] = hexToHslArr(baseHex);
+    const sat = 62;
+    const lo = 40, hi = 72;
+    const steps = [];
+    for (let i = 0; i < n; i++) {
+      const t = n <= 1 ? 0 : i / (n - 1);
+      steps.push(hslToHex(h, sat, hi - t * (hi - lo)));
+    }
+    return steps;
+  }
+
+  // --- Chart builders -------------------------------------------------
+  // Horizontal HTML bar rows: label, a proportional fill, and the exact
+  // value printed alongside it -- the bar is a visual on top of a number
+  // you can already read, never the only way to get it. A native title
+  // attribute adds a hover tooltip on top of that.
+  function buildBarChart(container, items, formatValue, ariaLabel) {
+    const max = Math.max(1, ...items.map((it) => it.value));
+    const chart = document.createElement("div");
+    chart.className = "dd-chart-bars";
+    chart.setAttribute("role", "img");
+    if (ariaLabel) chart.setAttribute("aria-label", ariaLabel);
+    items.forEach((it) => {
+      const row = document.createElement("div");
+      row.className = "dd-chart-bar-row";
+      row.title = `${it.label}: ${formatValue(it.value)}`;
+      const label = document.createElement("span");
+      label.className = "dd-chart-bar-label";
+      label.textContent = it.label;
+      const track = document.createElement("div");
+      track.className = "dd-chart-bar-track";
+      const fill = document.createElement("div");
+      fill.className = "dd-chart-bar-fill";
+      const pct = it.value > 0 ? Math.max(4, (it.value / max) * 100) : 0;
+      fill.style.width = pct + "%";
+      fill.style.background = it.color;
+      track.appendChild(fill);
+      const value = document.createElement("span");
+      value.className = "dd-chart-bar-value";
+      value.textContent = formatValue(it.value);
+      row.appendChild(label);
+      row.appendChild(track);
+      row.appendChild(value);
+      chart.appendChild(row);
+    });
+    container.appendChild(chart);
+  }
+
+  // SVG donut for a true part-to-whole ratio (kept to 2-3 slices, per the
+  // colorblind-safety cap on part-to-whole palettes). Center shows the
+  // combined total; the legend below prints each slice's own label,
+  // value, and percentage as real text -- the ring's colors are backup,
+  // not the only way to read the split.
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  function buildDonutChart(container, slices, formatValue, centerLabel) {
+    const total = slices.reduce((s, x) => s + x.value, 0);
+    const row = document.createElement("div");
+    row.className = "dd-chart-donut-row";
+
+    const outer = document.createElement("div");
+    outer.className = "dd-chart-donut-outer";
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 42 42");
+    svg.setAttribute("class", "dd-chart-donut");
+    svg.setAttribute("role", "img");
+    svg.setAttribute(
+      "aria-label",
+      slices.map((s) => `${s.label} ${total ? Math.round((s.value / total) * 100) : 0} percent`).join(", ")
+    );
+    const track = document.createElementNS(SVG_NS, "circle");
+    track.setAttribute("cx", "21");
+    track.setAttribute("cy", "21");
+    track.setAttribute("r", "15.9155");
+    track.setAttribute("class", "dd-chart-donut-track");
+    svg.appendChild(track);
+
+    let cumulative = 0;
+    slices.forEach((s) => {
+      const pct = total > 0 ? (s.value / total) * 100 : 0;
+      if (pct <= 0) return;
+      const gap = slices.length > 1 ? 1 : 0;
+      const arc = Math.max(pct - gap, 0.001);
+      const circle = document.createElementNS(SVG_NS, "circle");
+      circle.setAttribute("cx", "21");
+      circle.setAttribute("cy", "21");
+      circle.setAttribute("r", "15.9155");
+      circle.setAttribute("class", "dd-chart-donut-slice");
+      circle.setAttribute("stroke", s.color);
+      circle.setAttribute("stroke-dasharray", `${arc} ${100 - arc}`);
+      circle.setAttribute("stroke-dashoffset", String(-cumulative));
+      const title = document.createElementNS(SVG_NS, "title");
+      title.textContent = `${s.label}: ${formatValue(s.value)} (${Math.round(pct)}%)`;
+      circle.appendChild(title);
+      svg.appendChild(circle);
+      cumulative += pct;
+    });
+    outer.appendChild(svg);
+
+    const center = document.createElement("div");
+    center.className = "dd-chart-donut-center";
+    const centerValue = document.createElement("div");
+    centerValue.className = "dd-chart-donut-center-value";
+    centerValue.textContent = formatValue(total);
+    const centerText = document.createElement("div");
+    centerText.className = "dd-chart-donut-center-label";
+    centerText.textContent = centerLabel || "Total";
+    center.appendChild(centerValue);
+    center.appendChild(centerText);
+    outer.appendChild(center);
+    row.appendChild(outer);
+
+    const legend = document.createElement("div");
+    legend.className = "dd-chart-legend";
+    slices.forEach((s) => {
+      const item = document.createElement("div");
+      item.className = "dd-chart-legend-item";
+      const swatch = document.createElement("span");
+      swatch.className = "dd-chart-legend-swatch";
+      swatch.style.background = s.color;
+      const text = document.createElement("span");
+      const pct = total > 0 ? Math.round((s.value / total) * 100) : 0;
+      text.textContent = `${s.label} — ${formatValue(s.value)} (${pct}%)`;
+      item.appendChild(swatch);
+      item.appendChild(text);
+      legend.appendChild(item);
+    });
+    row.appendChild(legend);
+
+    container.appendChild(row);
+  }
+
   function addStatsRow(container, label, value) {
     const row = document.createElement("div");
     row.className = "dd-stats-row";
@@ -1136,12 +1328,81 @@
     addStatsRow(summary, "Tip Value", `$${t.tipValue.toFixed(2)}`);
     addStatsRow(summary, "Order Total", `$${t.orderTotal.toFixed(2)}`);
 
+    // Over Time: only meaningful past a single day -- Day's own "By Hour"
+    // section below already IS its over-time view. Week/Month walk day by
+    // day; Year walks month by month. Every point in the range is plotted
+    // (including $0 days), so a quiet stretch shows as a real gap rather
+    // than just vanishing from the chart.
+    if (currentStatsTab !== "day") {
+      const trendSection = addStatsSection(statsBody, "Over Time");
+      const trendItems = [];
+      if (currentStatsTab === "year") {
+        const year = start.getFullYear();
+        const baseHue = isDarkMode() ? CHART_PALETTE.dark.blue : CHART_PALETTE.light.blue;
+        const colors = ordinalRamp(baseHue, 12);
+        for (let m = 0; m < 12; m++) {
+          const key = `${year}-${pad2(m + 1)}`;
+          const bucket = result.byMonth[key];
+          trendItems.push({
+            label: new Date(year, m, 1).toLocaleDateString(undefined, { month: "short" }),
+            value: bucket ? bucket.tipValue : 0,
+            color: colors[m],
+          });
+        }
+      } else {
+        const days = [];
+        const cursor = startOfDay(start);
+        const last = startOfDay(end);
+        while (cursor <= last) {
+          days.push(new Date(cursor));
+          cursor.setDate(cursor.getDate() + 1);
+        }
+        const baseHue = isDarkMode() ? CHART_PALETTE.dark.blue : CHART_PALETTE.light.blue;
+        const colors = ordinalRamp(baseHue, days.length);
+        days.forEach((d, i) => {
+          const key = toDateKey(d);
+          const bucket = result.byDay[key];
+          const label =
+            currentStatsTab === "week"
+              ? d.toLocaleDateString(undefined, { weekday: "short" })
+              : String(d.getDate());
+          trendItems.push({ label, value: bucket ? bucket.tipValue : 0, color: colors[i] });
+        });
+      }
+      if (!trendItems.some((it) => it.value > 0)) {
+        addStatsEmptyNote(trendSection, "No tips recorded for this period.");
+      } else {
+        buildBarChart(trendSection, trendItems, (v) => `$${v.toFixed(2)}`, "Tip value over time");
+      }
+    }
+
     const fees = addStatsSection(statsBody, "Delivery Fees");
-    window.DD.calc.FEE_TIERS.forEach((tier) => {
-      addStatsRow(fees, `$${tier}`, String(t.feeCounts[tier] || 0));
-    });
+    if (!t.deliveries) {
+      addStatsEmptyNote(fees, "No deliveries recorded for this period.");
+    } else {
+      const feeItems = window.DD.calc.FEE_TIERS.map((tier, i) => ({
+        label: `$${tier}`,
+        value: t.feeCounts[tier] || 0,
+        color: feeChartColor(i),
+      }));
+      buildBarChart(fees, feeItems, (v) => String(v), "Deliveries by fee tier");
+    }
 
     const shiftSection = addStatsSection(statsBody, "Shift Breakdown");
+    const lunchDinnerColors = isDarkMode() ? LUNCH_DINNER_HUES.dark : LUNCH_DINNER_HUES.light;
+    if (!result.lunch.deliveries && !result.dinner.deliveries) {
+      addStatsEmptyNote(shiftSection, "No deliveries recorded for this period.");
+    } else {
+      buildDonutChart(
+        shiftSection,
+        [
+          { label: "Lunch", value: result.lunch.deliveries, color: lunchDinnerColors[0] },
+          { label: "Dinner", value: result.dinner.deliveries, color: lunchDinnerColors[1] },
+        ],
+        (v) => String(v),
+        "Deliveries"
+      );
+    }
     const shiftGrid = document.createElement("div");
     shiftGrid.className = "dd-stats-shift-grid";
     [
@@ -1180,11 +1441,14 @@
     if (!t.tipCount) {
       addStatsEmptyNote(tipDist, "No tips recorded for this period.");
     } else {
-      TIP_BUCKET_DEFS.forEach((b) => {
-        const count = t.tipBuckets[b.key] || 0;
-        if (!count) return; // skip empty buckets to keep this compact
-        addStatsRow(tipDist, TIP_BUCKET_LABELS[b.key], String(count));
-      });
+      const tipBaseHue = isDarkMode() ? CHART_PALETTE.dark.blue : CHART_PALETTE.light.blue;
+      const tipColors = ordinalRamp(tipBaseHue, TIP_BUCKET_DEFS.length);
+      const tipItems = TIP_BUCKET_DEFS.map((b, i) => ({
+        label: TIP_BUCKET_LABELS[b.key],
+        value: t.tipBuckets[b.key] || 0,
+        color: tipColors[i],
+      }));
+      buildBarChart(tipDist, tipItems, (v) => String(v), "Tip count by amount range");
     }
 
     const hourSection = addStatsSection(statsBody, "By Hour");
@@ -1195,10 +1459,14 @@
     if (!activeHours.length) {
       addStatsEmptyNote(hourSection, "No deliveries recorded for this period.");
     } else {
-      activeHours.forEach((h) => {
-        const bucket = result.byHour[h];
-        addStatsRow(hourSection, formatHourLabel(h), `${bucket.deliveries} · $${bucket.tipValue.toFixed(2)} tips`);
-      });
+      const hourBaseHue = isDarkMode() ? CHART_PALETTE.dark.blue : CHART_PALETTE.light.blue;
+      const hourColors = ordinalRamp(hourBaseHue, 24);
+      const hourItems = activeHours.map((h) => ({
+        label: formatHourLabel(h),
+        value: result.byHour[h].deliveries,
+        color: hourColors[h],
+      }));
+      buildBarChart(hourSection, hourItems, (v) => String(v), "Deliveries by hour of day");
     }
   }
 

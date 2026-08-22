@@ -16,8 +16,10 @@
   background-color: white;
 }
   </style>
-<link href="css/style.css?v=23" rel="stylesheet"/>
+<link href="css/style.css?v=25" rel="stylesheet"/>
 <link href="css/dd-box-modal.css?v=2" rel="stylesheet"/>
+<link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
+<link href="css/maps.css?v=4" rel="stylesheet"/>
 <script>
   // Applied before first paint so returning in dark mode doesn't flash light.
   (function () {
@@ -255,11 +257,52 @@
 <button class="btn-secondary" id="dd-stats-done" type="button">Done</button>
 </div>
 </div>
+<div class="dd-confirm-overlay" id="dd-maps-picker-overlay" aria-hidden="true">
+<div class="dd-confirm-card card" role="dialog" aria-modal="true" aria-labelledby="dd-maps-picker-title">
+<h4 class="text-center" id="dd-maps-picker-title">Maps</h4>
+<div id="dd-maps-picker-body"></div>
+<button class="btn-secondary" id="dd-maps-picker-done" type="button">Done</button>
+</div>
+</div>
 </div><!-- /#phoneColumn -->
 <div id="paneResizer" role="separator" aria-orientation="vertical" aria-label="Resize app column" tabindex="0"></div>
 <div id="rightPane" aria-hidden="true"></div>
 </div><!-- /#appShell -->
+<div id="dd-map-overlay" aria-hidden="true">
+<div class="dd-map-topbar">
+<button class="dd-map-back-btn" id="dd-map-back" type="button" aria-label="Back">‹ Back</button>
+<div class="dd-map-title" id="dd-map-title"></div>
+<button class="dd-map-setup-toggle" id="dd-map-setup-toggle" type="button">Setup Mode</button>
+</div>
+<div class="dd-map-searchbar">
+<input class="dd-map-search-input" id="dd-map-search-input" type="text" inputmode="numeric" placeholder="Go to house #" autocomplete="off"/>
+<button class="dd-map-search-btn" id="dd-map-search-btn" type="button">Go</button>
+<span class="dd-map-search-msg" id="dd-map-search-msg"></span>
+</div>
+<div id="dd-map-canvas-wrap">
+<div id="dd-map-canvas"></div>
+<div class="dd-map-grid" id="dd-map-grid" aria-hidden="true"></div>
+<button class="dd-map-recenter-btn hide" id="dd-map-recenter-btn" type="button" aria-label="Recenter on my location">⌖</button>
+</div>
+<div class="dd-map-setup-bar hide" id="dd-map-setup-bar">
+<p class="dd-map-setup-instructions" id="dd-map-setup-instructions">Tap the map to drop the next pin.</p>
+<div class="dd-map-setup-row hide" id="dd-map-setup-fields">
+<label class="dd-map-setup-label" for="dd-map-setup-number">House #</label>
+<input class="dd-map-setup-number" id="dd-map-setup-number" type="text" inputmode="numeric" autocomplete="off"/>
+<label class="dd-map-setup-label" for="dd-map-setup-rotation">Direction</label>
+<input class="dd-map-setup-rotation" id="dd-map-setup-rotation" type="range" min="-180" max="180" step="1" value="0"/>
+</div>
+<div class="dd-map-setup-actions hide" id="dd-map-setup-actions">
+<button class="btn-danger hide" id="dd-map-setup-delete" type="button">Delete</button>
+<button class="btn-secondary" id="dd-map-setup-cancel" type="button">Cancel</button>
+<button class="btn-primary" id="dd-map-setup-confirm" type="button">Confirm</button>
+</div>
+<button class="btn-secondary" id="dd-map-setup-exit" type="button">Exit Setup Mode</button>
+</div>
+</div>
 <script src="js/calculations.js?v=2"></script>
 <script src="js/dd-box-modal.js?v=2"></script>
-<script src="js/script.js?v=16"></script></body>
+<script src="js/script.js?v=18"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="js/maps.js?v=7"></script></body>
 </html>
