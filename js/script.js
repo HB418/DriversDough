@@ -31,7 +31,6 @@
   const menuTimeCard = document.getElementById("menuTimeCard");
   const menuStats = document.getElementById("menuStats");
   const menuHideImage = document.getElementById("menuHideImage");
-  const menuCodes = document.getElementById("menuCodes");
   const menuBackup = document.getElementById("menuBackup");
   const menuRestore = document.getElementById("menuRestore");
   const restoreFileInput = document.getElementById("restoreFileInput");
@@ -316,16 +315,7 @@
   });
 
   // Maps is now real — see js/maps.js, which wires up #menuMaps on its own.
-
-  // Codes: placeholder until the real address/code list is built.
-  menuCodes?.addEventListener("click", () => {
-    closeHamburgerMenu();
-    window.DD.modal?.show({
-      top: "CODES",
-      bottom: "COMING SOON — CHECK BACK LATER",
-      okText: "OK",
-    });
-  });
+  // Codes is now real too — see js/codes.js, which wires up #menuCodes.
 
   // === Backup / Restore ===
   // Everything this app stores lives in localStorage on this one device —

@@ -1,0 +1,109 @@
+/* css/codes.css
+   Codes: a plain list of property addresses and their access codes,
+   grouped by address (a property can have more than one code -- gate,
+   lockbox, etc). Admin-only to add/edit/delete, viewable by everyone.
+   Same phone-width popup family as the Maps picker / Forum overlays. */
+
+.dd-codes-add-btn {
+  width: 100%;
+  margin-bottom: 0.7rem;
+}
+
+.dd-codes-scroll {
+  max-height: min(60svh, 480px);
+  overflow-y: auto;
+  padding-right: 0.4rem;
+  scrollbar-gutter: stable;
+}
+
+.dd-codes-item {
+  padding: 0.65rem 0.8rem;
+  border: 1px solid #e6e6e6;
+  border-radius: 10px;
+  margin-bottom: 0.55rem;
+  background: #fff;
+}
+.dd-codes-item:last-child { margin-bottom: 0; }
+:root[data-theme="dark"] .dd-codes-item {
+  border-color: #3a3f47;
+  background: #262a31;
+}
+
+.dd-codes-address {
+  font-weight: 700;
+  color: var(--dd-orange);
+  margin-bottom: 0.3rem;
+}
+
+.dd-codes-code-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.2rem 0;
+}
+.dd-codes-code {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 0.95rem;
+}
+.dd-codes-code-actions {
+  flex-shrink: 0;
+  display: flex;
+  gap: 0.7rem;
+}
+.dd-codes-edit-btn,
+.dd-codes-delete-btn {
+  background: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0 !important;
+}
+.dd-codes-edit-btn { color: var(--dd-sky); }
+.dd-codes-delete-btn { color: var(--dd-red); }
+
+/* === Add/edit form === */
+.dd-codes-form {
+  border: 1px dashed var(--dd-sky);
+  border-radius: 10px;
+  padding: 0.75rem 0.85rem;
+  margin-bottom: 0.8rem;
+}
+:root[data-theme="dark"] .dd-codes-form { border-color: var(--dd-amber); }
+.dd-codes-field {
+  margin-bottom: 0.55rem;
+}
+.dd-codes-field:last-of-type { margin-bottom: 0.7rem; }
+.dd-codes-field label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--dd-orange);
+  margin-bottom: 0.2rem;
+}
+.dd-codes-field input[type="text"] {
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.95rem;
+  box-sizing: border-box;
+}
+:root[data-theme="dark"] .dd-codes-field input[type="text"] {
+  background: #1f2227;
+  border-color: #3a3f47;
+  color: #e8e8e8;
+}
+.dd-codes-form-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+.dd-codes-form-actions button { flex: 1; }
+.dd-codes-form-msg {
+  font-size: 0.8rem;
+  color: var(--dd-red);
+  margin-bottom: 0.4rem;
+}
