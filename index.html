@@ -16,7 +16,7 @@
   background-color: white;
 }
   </style>
-<link href="css/style.css?v=25" rel="stylesheet"/>
+<link href="css/style.css?v=30" rel="stylesheet"/>
 <link href="css/dd-box-modal.css?v=2" rel="stylesheet"/>
 <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
 <link href="css/maps.css?v=4" rel="stylesheet"/>
@@ -116,26 +116,28 @@
   </fieldset>
 </form></section><div class="container" id="main-content"><h4>Deliveries</h4><section class="row-buttons">
 <button class="btn-primary" id="addEntryBtn">Add</button>
-<button class="btn-danger end-night-btn" id="endNightBtn" type="button">End Night</button></section><section id="deliveriesSection" class="card"><table><colgroup><col style="width:2.5ch"/><col style="width:9.5ch"/><col style="width:4ch"/><col style="width:5.5ch"/><col style="width:5.8ch"/><col style="width:4.7ch"/></colgroup><thead><tr><th>#</th><th>Street</th><th>Type</th><th>Total</th><th>Tip</th><th>Fee</th></tr></thead><tbody id="deliveryTable"></tbody></table></section>
+<button class="btn-danger end-night-btn" id="endNightBtn" type="button">End Night</button></section><section id="deliveriesSection" class="card"><table><colgroup><col style="width:3.3ch"/><col style="width:8.7ch"/><col style="width:4ch"/><col style="width:5.5ch"/><col style="width:5.8ch"/><col style="width:4.7ch"/></colgroup><thead><tr><th>#</th><th>Street</th><th>Type</th><th>Total</th><th>Tip</th><th>Fee</th></tr></thead><tbody id="deliveryTable"></tbody></table></section>
 <h4>Calculations</h4><section class="card">
-<ul>
-<li>$2.25 Deliveries <span class="float-right" id="count-225">0</span></li>
-<li>$4.00 Deliveries <span class="float-right" id="count-400">0</span></li>
-<li>$5.00 Deliveries <span class="float-right" id="count-500">0</span></li>
-<li>$6.00 Deliveries <span class="float-right" id="count-600">0</span></li>
-<li>$7.00 Deliveries <span class="float-right" id="count-700">0</span></li>
-<li>$8.00 Deliveries <span class="float-right" id="count-800">0</span></li>
-<li><strong>Total Deliveries</strong> <span class="float-right" id="count-total">0</span></li>
+<p class="dd-calc-waiting hide" id="counts-waiting">Waiting for Data</p>
+<ul id="counts-list">
+<li id="row-count-225" class="hide">$2.25 Deliveries <span class="float-right" id="count-225">0</span></li>
+<li id="row-count-400" class="hide">$4.00 Deliveries <span class="float-right" id="count-400">0</span></li>
+<li id="row-count-500" class="hide">$5.00 Deliveries <span class="float-right" id="count-500">0</span></li>
+<li id="row-count-600" class="hide">$6.00 Deliveries <span class="float-right" id="count-600">0</span></li>
+<li id="row-count-700" class="hide">$7.00 Deliveries <span class="float-right" id="count-700">0</span></li>
+<li id="row-count-800" class="hide">$8.00 Deliveries <span class="float-right" id="count-800">0</span></li>
+<li id="row-count-total" class="hide"><strong>Total Deliveries</strong> <span class="float-right" id="count-total">0</span></li>
 </ul>
 </section><section class="card">
-<ul>
-<li>$2.25 @ 1.50ea <span class="float-right" id="value-225">$0.00</span></li>
-<li>$4.00 @ 3.25ea <span class="float-right" id="value-400">$0.00</span></li>
-<li>$5.00 @ 4.25ea <span class="float-right" id="value-500">$0.00</span></li>
-<li>$6.00 @ 5.25ea <span class="float-right" id="value-600">$0.00</span></li>
-<li>$7.00 @ 6.25ea <span class="float-right" id="value-700">$0.00</span></li>
-<li>$8.00 @ 7.25ea <span class="float-right" id="value-800">$0.00</span></li>
-<li><strong>Total Value of Fees</strong> <span class="float-right" id="value-total">$0.00</span></li>
+<p class="dd-calc-waiting hide" id="values-waiting">Waiting for Data</p>
+<ul id="values-list">
+<li id="row-value-225" class="hide">$2.25 @ 1.50ea <span class="float-right" id="value-225">$0.00</span></li>
+<li id="row-value-400" class="hide">$4.00 @ 3.25ea <span class="float-right" id="value-400">$0.00</span></li>
+<li id="row-value-500" class="hide">$5.00 @ 4.25ea <span class="float-right" id="value-500">$0.00</span></li>
+<li id="row-value-600" class="hide">$6.00 @ 5.25ea <span class="float-right" id="value-600">$0.00</span></li>
+<li id="row-value-700" class="hide">$7.00 @ 6.25ea <span class="float-right" id="value-700">$0.00</span></li>
+<li id="row-value-800" class="hide">$8.00 @ 7.25ea <span class="float-right" id="value-800">$0.00</span></li>
+<li id="row-value-total" class="hide"><strong>Total Value of Fees</strong> <span class="float-right" id="value-total">$0.00</span></li>
 </ul>
 </section><section class="card">
 <ul>
@@ -145,10 +147,10 @@
 </ul>
 </section><section class="card">
 <ul>
+<li><strong>Total Cash Owed</strong> <span class="float-right" id="total-cash-owed">$0.00</span></li>
 <li>Total From House <span class="float-right" id="total-from-house-display">$0.00</span></li>
 <li>Cash Gratuity <span class="float-right" id="cash-gratuity">$0.00</span></li>
-<li>Night Total <span class="float-right" id="night-total">$0.00</span></li>
-<li><strong>Total Cash Owed</strong> <span class="float-right" id="total-cash-owed">$0.00</span></li>
+<li><strong>Night Total</strong> <span class="float-right" id="night-total">$0.00</span></li>
 </ul>
 </section></div>
 <footer class="elevated" id="appFooter">
@@ -300,9 +302,9 @@
 <button class="btn-secondary" id="dd-map-setup-exit" type="button">Exit Setup Mode</button>
 </div>
 </div>
-<script src="js/calculations.js?v=2"></script>
+<script src="js/calculations.js?v=3"></script>
 <script src="js/dd-box-modal.js?v=2"></script>
-<script src="js/script.js?v=18"></script>
+<script src="js/script.js?v=21"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="js/maps.js?v=7"></script></body>
 </html>

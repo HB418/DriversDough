@@ -874,7 +874,12 @@
       if (!day[hourKey]) day[hourKey] = emptyStatsBucket();
       const bucket = day[hourKey];
       const tip = parseFloat(entry.tip) || 0;
-      const total = parseFloat(entry.total) || 0;
+      // Order Total here means what the customer paid for the order
+      // itself -- a phone/online CC slip's printed total often already
+      // has the driver's card tip baked in, so back that portion out
+      // (see correctedOrderTotal). Cash orders, and any tip portion paid
+      // in cash, are untouched.
+      const total = window.DD.calc.correctedOrderTotal(entry);
       bucket.deliveries += 1;
       bucket.orderTotal += total;
       if (tip > 0) {
@@ -1451,7 +1456,7 @@
       buildBarChart(tipDist, tipItems, (v) => String(v), "Tip count by amount range");
     }
 
-    const hourSection = addStatsSection(statsBody, "By Hour");
+    const hourSection = addStatsSection(statsBody, "Deliveries by Hour");
     const activeHours = Object.keys(result.byHour)
       .map(Number)
       .filter((h) => result.byHour[h].deliveries > 0)
@@ -1467,6 +1472,29 @@
         color: hourColors[h],
       }));
       buildBarChart(hourSection, hourItems, (v) => String(v), "Deliveries by hour of day");
+    }
+
+    // Same hour-of-day breakdown, but tip dollars instead of delivery
+    // count -- a busy hour isn't always the best-tipping one, so this is
+    // its own chart rather than folded into the count above. Uses whatever
+    // hours actually had tip money (not just deliveries), and a distinct
+    // hue (green, "money") so it reads as a different metric at a glance.
+    const tipHourSection = addStatsSection(statsBody, "Tip $ by Hour");
+    const activeTipHours = Object.keys(result.byHour)
+      .map(Number)
+      .filter((h) => result.byHour[h].tipValue > 0)
+      .sort((a, b) => a - b);
+    if (!activeTipHours.length) {
+      addStatsEmptyNote(tipHourSection, "No tips recorded for this period.");
+    } else {
+      const tipHourBaseHue = isDarkMode() ? CHART_PALETTE.dark.green : CHART_PALETTE.light.green;
+      const tipHourColors = ordinalRamp(tipHourBaseHue, 24);
+      const tipHourItems = activeTipHours.map((h) => ({
+        label: formatHourLabel(h),
+        value: result.byHour[h].tipValue,
+        color: tipHourColors[h],
+      }));
+      buildBarChart(tipHourSection, tipHourItems, (v) => `$${v.toFixed(2)}`, "Tip dollars by hour of day");
     }
   }
 
@@ -1731,6 +1759,17 @@
   function renderTable() {
     if (!tbody) return;
     tbody.innerHTML = "";
+    if (!entries.length) {
+      const tr = document.createElement("tr");
+      tr.className = "dd-table-waiting-row";
+      const td = document.createElement("td");
+      td.colSpan = 6;
+      td.className = "dd-calc-waiting";
+      td.textContent = "Waiting for Data";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
     entries.forEach((entry, i) => {
       const tr = document.createElement("tr");
       tr.dataset.index = String(i);
@@ -1818,11 +1857,28 @@
   function updateCalculations() {
     const totals = window.DD.calc.computeTotals(entries);
 
+    // Each fee tier's line only shows once that tier has an actual
+    // delivery logged -- no point listing "$7.00 Deliveries: 0" for every
+    // tier that hasn't come up yet. If NOTHING has been logged at all,
+    // both cards show a single "Waiting for Data" note instead of an
+    // empty list.
+    const hasAnyData = totals.totalDeliveries > 0;
+    const toggle = (id, show) => document.getElementById(id)?.classList.toggle("hide", !show);
+    toggle("counts-waiting", !hasAnyData);
+    toggle("values-waiting", !hasAnyData);
+    toggle("counts-list", hasAnyData);
+    toggle("values-list", hasAnyData);
+
     window.DD.calc.FEE_TIERS.forEach((tier) => {
       const key = tier.replace(".", "");
+      const tierHasData = totals.counts[tier] > 0;
       setText(`count-${key}`, String(totals.counts[tier]));
       setText(`value-${key}`, `$${totals.values[tier].toFixed(2)}`);
+      toggle(`row-count-${key}`, tierHasData);
+      toggle(`row-value-${key}`, tierHasData);
     });
+    toggle("row-count-total", hasAnyData);
+    toggle("row-value-total", hasAnyData);
 
     setText("count-total", String(totals.totalDeliveries));
     setText("value-total", `$${totals.totalValueOfFees.toFixed(2)}`);

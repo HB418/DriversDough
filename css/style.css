@@ -13,6 +13,7 @@
   --dd-amber: #f29f05;
   --dd-orange: #f28705;
   --dd-red: #d91c0b;
+  --dd-green: #008300; /* same green already used for the Tip $ by Hour chart */
 }
 :root[data-theme="dark"] {
   --dd-sky: #55a6d9; /* night shot has no blue left in it — kept as-is, it still reads fine against navy */
@@ -21,6 +22,7 @@
   --dd-orange: #d97904;
   --dd-red: #f20505;
   --dd-navy: #00040d;
+  --dd-green: #008300;
 }
 
 /* === Page base === */
@@ -695,9 +697,40 @@ header h1 {
 #main-content .card ul li .float-right {
   text-align: right;
 }
-/* The one number that matters most at the end of a shift — call it out. */
+/* #main-content .card ul li above sets display:flex with #main-content's
+   id in its selector, which outranks the generic .hide{display:none}
+   utility on specificity alone regardless of stylesheet order -- restate
+   the override here, scoped exactly as specifically, so toggling .hide
+   on one of these rows (Calculations: per-tier delivery/value lines that
+   only show once that tier has data) actually hides it. */
+#main-content .card ul li.hide {
+  display: none;
+}
+/* "Waiting for Data": shown instead of the (all-zero) breakdown list
+   until at least one delivery of any fee tier has been logged. */
+.dd-calc-waiting {
+  color: #777;
+  font-size: 0.95rem;
+  font-style: italic;
+  margin: 0.2rem 0;
+  text-align: center;
+}
+:root[data-theme="dark"] .dd-calc-waiting {
+  color: #999;
+}
+/* The final card's two headline numbers, called out at opposite ends:
+   Total Cash Owed (red) up top — cash that has to go back to the house —
+   and Night Total (green) at the bottom — what the driver actually made.
+   The two lines between them (Total From House, Cash Gratuity) are a real
+   running subtotal that adds up TO Night Total; Total Cash Owed is a
+   separate figure entirely and sat at the end of that same list before,
+   which read like it was the sum of everything above it. */
 #total-cash-owed {
   color: var(--dd-red);
+  font-weight: 700;
+}
+#night-total {
+  color: var(--dd-green);
   font-weight: 700;
 }
 
@@ -745,6 +778,16 @@ header h1 {
   border-bottom: none;
 }
 
+/* Empty state: a single "Waiting for Data" cell spanning the whole table
+   instead of a blank tbody. Overrides needed since it's the table's only
+   <td>, so the "#" column's right-align/nowrap rule (#deliveriesSection
+   td:nth-child(1)) would otherwise apply to it too. */
+#deliveriesSection .dd-table-waiting-row td {
+  text-align: center !important;
+  white-space: normal !important;
+  padding: 0.6rem 0.3rem !important;
+}
+
 /* The table's base sizing above is tuned for the narrowest phone this app
    runs on — correct there, cramped anywhere with more room to spare. These
    scale it back up as #phoneColumn (see container-type on it above) actually
@@ -784,10 +827,17 @@ header h1 {
   }
 }
 
-/* # column: narrow, right-aligned */
+/* # column: narrow, right-aligned. white-space:nowrap matters here more
+   than it looks -- at 2.5ch the column had just enough room for a single
+   digit; a double-digit delivery number (10+) had nowhere to go but wrap
+   onto its own line within the cell, breaking the row height. Widened the
+   colgroup entry in index.html (2.5ch -> 3.3ch, taken from Street's
+   9.5ch -> 8.7ch so the table's total width is unchanged -- Street
+   already scrolls internally for overflow, the safest column to trim). */
 #deliveriesSection th:nth-child(1),
 #deliveriesSection td:nth-child(1) {
   text-align: right;
+  white-space: nowrap;
 }
 
 /* Street column: never wraps to a second row and never grows the row.
@@ -861,7 +911,7 @@ header h1 {
   margin-left: 1px;
   font-size: 0.65em;
   font-weight: 700;
-  color: var(--dd-orange);
+  color: var(--dd-green);
 }
 
 /* === Order confirmation === */
@@ -1194,6 +1244,15 @@ header h1 {
   max-width: 560px;
   width: 100%;
   padding: 1.25rem !important;
+  /* .dd-confirm-card (the base class) has overflow-y:auto on this same
+     element -- the card scrolls as a whole, not an inner wrapper -- so
+     the scrollbar sits inside the right padding rather than beyond it,
+     leaving chart bars/labels butted right up against it. Extra right
+     padding (and scrollbar-gutter, where supported, so the gutter is
+     reserved even before a scrollbar is actually needed) gives the
+     content real breathing room from it. */
+  padding-right: 1.85rem !important;
+  scrollbar-gutter: stable;
 }
 @container app-col (min-width: 460px) {
   .dd-stats-card {
@@ -1587,6 +1646,7 @@ header h1 {
 :root[data-theme="dark"] .street-scroll {
   color: #e8e8e8;
 }
-/* .partial-tip-marker, .cash-tip-marker, and .cash-amount need no dark
-   override — they're colored with var(--dd-orange), which already
-   re-themes itself. */
+/* .partial-tip-marker and .cash-tip-marker need no dark override —
+   they're colored with var(--dd-green), which already re-themes itself
+   (currently the same value in both modes). .cash-amount still uses
+   var(--dd-orange), also self-re-theming. */

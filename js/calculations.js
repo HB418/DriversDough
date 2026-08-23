@@ -40,6 +40,24 @@
     return 0;
   }
 
+  // What the customer actually paid for the ORDER, as tracked in Stats'
+  // "Order Total" — not inflated by any tip that ended up charged to
+  // their card. Cash orders are exactly what's on the slip already. A
+  // phone/online CC order's printed total often already has the tip
+  // baked in (not every slip breaks out a separate subtotal line), so
+  // back out whatever portion of that tip actually landed on the card.
+  // Any part of the tip paid in cash was never added to that printed
+  // total in the first place, so it's left alone either way — including
+  // a CC order whose ENTIRE tip was handed over in cash, where nothing
+  // gets deducted at all.
+  function correctedOrderTotal(e) {
+    const total = parseFloat(e.total) || 0;
+    if (e.orderType !== "phone_cc" && e.orderType !== "online_cc") return total;
+    const tip = parseFloat(e.tip) || 0;
+    const ccTipPortion = tip - cashPortionOfTip(e);
+    return total - ccTipPortion;
+  }
+
   function computeTotals(entries) {
     const counts = {};
     const values = {};
@@ -89,5 +107,5 @@
     };
   }
 
-  window.DD.calc = { FEE_TIERS, FEE_RATES, computeTotals, cashPortionOfTip };
+  window.DD.calc = { FEE_TIERS, FEE_RATES, computeTotals, cashPortionOfTip, correctedOrderTotal };
 })();
