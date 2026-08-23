@@ -332,6 +332,12 @@
     if (mapTitleEl) mapTitleEl.textContent = def.name;
     if (searchInput) searchInput.value = "";
     if (searchMsg) searchMsg.textContent = "";
+    // Map creation/editing is admin-only -- once pins exist they're
+    // permanent and visible to everyone, but only an admin account can
+    // add, move, or delete them. Re-checked every time a map opens so it
+    // reflects whoever is currently logged in without needing a reload.
+    const session = window.DD.auth && window.DD.auth.getSession();
+    setupToggleBtn?.classList.toggle("hide", !(session && session.isAdmin));
     setSetupMode(false);
 
     mapOverlay?.classList.add("is-open");
@@ -465,7 +471,11 @@
     exitPendingEditOrPlace();
     if (on && setupInstructions) setupInstructions.textContent = readyMessage();
   }
-  setupToggleBtn?.addEventListener("click", () => setSetupMode(!setupModeOn));
+  setupToggleBtn?.addEventListener("click", () => {
+    const session = window.DD.auth && window.DD.auth.getSession();
+    if (!session || !session.isAdmin) return; // button is hidden for non-admins; this is belt-and-suspenders
+    setSetupMode(!setupModeOn);
+  });
   setupExitBtn?.addEventListener("click", () => setSetupMode(false));
 
   // Pulls one existing permanent pin out for editing: draggable position,

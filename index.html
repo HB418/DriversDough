@@ -17,9 +17,11 @@
 }
   </style>
 <link href="css/style.css?v=30" rel="stylesheet"/>
-<link href="css/dd-box-modal.css?v=2" rel="stylesheet"/>
+<link href="css/dd-box-modal.css?v=3" rel="stylesheet"/>
 <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
 <link href="css/maps.css?v=4" rel="stylesheet"/>
+<link href="css/forum.css?v=1" rel="stylesheet"/>
+<link href="css/auth.css?v=1" rel="stylesheet"/>
 <script>
   // Applied before first paint so returning in dark mode doesn't flash light.
   (function () {
@@ -32,6 +34,50 @@
 </script>
 </head>
 <body>
+<div id="dd-auth-gate">
+<div class="dd-auth-card">
+<h1>Driver's Dough</h1>
+<div class="dd-auth-tabs">
+<button class="dd-auth-tab is-active" data-tab="login" type="button">Log In</button>
+<button class="dd-auth-tab" data-tab="signup" type="button">Sign Up</button>
+</div>
+<div class="dd-auth-form-msg hide" id="dd-auth-msg"></div>
+<form class="dd-auth-form" id="dd-auth-login-form">
+<div class="dd-auth-field">
+<label for="dd-auth-login-username">Username</label>
+<input id="dd-auth-login-username" type="text" autocomplete="username" autocapitalize="off"/>
+</div>
+<div class="dd-auth-field">
+<label for="dd-auth-login-password">Password</label>
+<input id="dd-auth-login-password" type="password" autocomplete="current-password"/>
+</div>
+<button class="btn-primary dd-auth-submit" type="submit">Log In</button>
+</form>
+<form class="dd-auth-form hide" id="dd-auth-signup-form">
+<div class="dd-auth-field">
+<label for="dd-auth-signup-code">Access Code</label>
+<input id="dd-auth-signup-code" type="text" autocomplete="off"/>
+</div>
+<div class="dd-auth-field">
+<label for="dd-auth-signup-name">Your Name</label>
+<input id="dd-auth-signup-name" type="text" autocomplete="name"/>
+</div>
+<div class="dd-auth-field">
+<label for="dd-auth-signup-username">Username</label>
+<input id="dd-auth-signup-username" type="text" autocomplete="username" autocapitalize="off"/>
+</div>
+<div class="dd-auth-field">
+<label for="dd-auth-signup-password">Password</label>
+<input id="dd-auth-signup-password" type="password" autocomplete="new-password"/>
+</div>
+<div class="dd-auth-field">
+<label for="dd-auth-signup-confirm">Confirm Password</label>
+<input id="dd-auth-signup-confirm" type="password" autocomplete="new-password"/>
+</div>
+<button class="btn-primary dd-auth-submit" type="submit">Sign Up</button>
+</form>
+</div>
+</div>
 <div id="appShell">
 <div id="phoneColumn">
 <header class="elevated" id="appHeader">
@@ -158,13 +204,16 @@
 <span></span><span></span><span></span>
 </button>
 <div class="hamburger-menu" id="hamburgerMenu" aria-hidden="true">
+<div class="menu-user-label" id="menuUserLabel"></div>
 <button class="menu-item" id="menuTimeCard" type="button">Time Card</button>
 <button class="menu-item" id="menuStats" type="button">Stats</button>
 <button class="menu-item" id="menuHideImage" type="button">Hide Image</button>
 <button class="menu-item" id="menuMaps" type="button">Maps</button>
+<button class="menu-item" id="menuForum" type="button">Forum</button>
 <button class="menu-item" id="menuBackup" type="button">Backup Data</button>
 <button class="menu-item" id="menuRestore" type="button">Restore Data</button>
 <input accept="application/json" id="restoreFileInput" style="display:none" type="file"/>
+<button class="menu-item dd-auth-logout" id="menuLogout" type="button">Log Out</button>
 </div>
 <div class="footer-punch-slot">
 <button class="punch-btn" id="punchBtn" type="button">
@@ -266,6 +315,16 @@
 <button class="btn-secondary" id="dd-maps-picker-done" type="button">Done</button>
 </div>
 </div>
+<div class="dd-confirm-overlay" id="dd-forum-overlay" aria-hidden="true">
+<div class="dd-confirm-card card dd-forum-card" role="dialog" aria-modal="true" aria-labelledby="dd-forum-title">
+<div class="dd-forum-topbar">
+<button class="dd-forum-back-btn hide" id="dd-forum-back" type="button">‹ Back</button>
+<h4 id="dd-forum-title">The Pit Stop</h4>
+</div>
+<div id="dd-forum-body"></div>
+<button class="btn-secondary" id="dd-forum-done" type="button">Done</button>
+</div>
+</div>
 </div><!-- /#phoneColumn -->
 <div id="paneResizer" role="separator" aria-orientation="vertical" aria-label="Resize app column" tabindex="0"></div>
 <div id="rightPane" aria-hidden="true"></div>
@@ -304,7 +363,9 @@
 </div>
 <script src="js/calculations.js?v=3"></script>
 <script src="js/dd-box-modal.js?v=2"></script>
-<script src="js/script.js?v=21"></script>
+<script src="js/auth.js?v=2"></script>
+<script src="js/script.js?v=23"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="js/maps.js?v=7"></script></body>
+<script src="js/maps.js?v=8"></script>
+<script src="js/forum.js?v=2"></script></body>
 </html>

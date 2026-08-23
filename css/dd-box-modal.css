@@ -14,10 +14,17 @@
   --font-script: 'Pacifico','Brush Script MT','Segoe Script','Dancing Script',cursive,ui-rounded;
 }
 
-/* Overlay: hidden until JS adds .is-open */
+/* Overlay: hidden until JS adds .is-open. z-index is higher than any other
+   overlay in the app (.dd-confirm-overlay family: 9999; the full-viewport
+   Maps view: 10000) -- this is the confirm/alert dialog every destructive
+   action routes through, and it needs to win when shown on top of another
+   overlay that's staying open underneath it (e.g. deleting a Forum post
+   without closing the Forum itself). Before Forum, nothing ever triggered
+   this modal while another .dd-confirm-overlay was still open, so the tie
+   with that family's z-index:9999 never actually got hit. */
 .ddb-overlay{
   position:fixed; inset:0; display:none; align-items:center; justify-content:center;
-  background:rgba(0,0,0,.38); padding:clamp(8px,4vw,24px); z-index:9999;
+  background:rgba(0,0,0,.38); padding:clamp(8px,4vw,24px); z-index:10001;
 }
 .ddb-overlay.is-open{ display:flex; }
 

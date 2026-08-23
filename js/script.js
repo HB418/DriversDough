@@ -329,6 +329,8 @@
     "driversDoughDarkMode",
     "driversDoughHideImage",
     "driversDoughMaps",
+    "driversDoughForum",
+    "driversDoughAuth",
   ];
 
   function backupData() {

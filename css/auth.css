@@ -1,0 +1,134 @@
+/* css/auth.css
+   Sign up / log in gate. FRAMEWORK NOTE: there's no real backend yet --
+   js/auth.js implements signUp/logIn/logOut/getSession against
+   localStorage (salted-hash passwords, not plaintext, but this is still
+   NOT a substitute for real server-side auth once one exists). This
+   stylesheet is just the gate screen + the small hamburger-menu additions
+   (signed-in-as label, Log Out). */
+
+#dd-auth-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 20000; /* above everything, including the ddb confirm modal (10001) */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f4f1ea;
+  padding: 1rem;
+  overflow-y: auto;
+}
+#dd-auth-gate.hide {
+  display: none;
+}
+:root[data-theme="dark"] #dd-auth-gate {
+  background: var(--dd-navy);
+}
+
+.dd-auth-card {
+  width: min(92vw, 380px);
+  background: #fff;
+  border-radius: 14px;
+  border-top: 4px solid var(--dd-amber);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  padding: 1.5rem 1.4rem;
+  margin: auto;
+}
+:root[data-theme="dark"] .dd-auth-card {
+  background: #1f2227;
+}
+.dd-auth-card h1 {
+  text-align: center;
+  font-size: 1.6rem;
+  margin: 0 0 1rem;
+  color: var(--dd-orange);
+}
+
+.dd-auth-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.dd-auth-tab {
+  flex: 1;
+  padding: 0.5rem;
+  border: 2px solid var(--dd-sky) !important;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--dd-sky);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.9rem;
+  cursor: pointer;
+  box-shadow: none !important;
+}
+.dd-auth-tab.is-active {
+  background: var(--dd-sky);
+  color: #fff;
+}
+:root[data-theme="dark"] .dd-auth-tab {
+  background: transparent;
+  border-color: var(--dd-amber) !important;
+  color: var(--dd-amber);
+}
+:root[data-theme="dark"] .dd-auth-tab.is-active {
+  background: var(--dd-amber);
+  color: #1f2227;
+}
+
+.dd-auth-form.hide {
+  display: none;
+}
+.dd-auth-field {
+  margin-bottom: 0.7rem;
+}
+.dd-auth-field label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--dd-orange);
+  margin-bottom: 0.2rem;
+}
+.dd-auth-field input {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 1rem;
+  box-sizing: border-box;
+}
+:root[data-theme="dark"] .dd-auth-field input {
+  background: #262a31;
+  border-color: #3a3f47;
+  color: #e8e8e8;
+}
+.dd-auth-form-msg {
+  font-size: 0.85rem;
+  color: var(--dd-red);
+  margin-bottom: 0.6rem;
+}
+.dd-auth-form-msg.hide {
+  display: none;
+}
+.dd-auth-submit {
+  width: 100%;
+  margin-top: 0.3rem;
+}
+
+/* === Hamburger-menu additions === */
+.menu-user-label {
+  padding: 0.65rem 1rem 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #888;
+  border-bottom: 1px solid #eee;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+:root[data-theme="dark"] .menu-user-label {
+  color: #999;
+  border-bottom-color: #333;
+}
+.hamburger-menu .menu-item.dd-auth-logout {
+  color: var(--dd-red);
+}
