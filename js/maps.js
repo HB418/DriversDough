@@ -15,11 +15,20 @@
    the street. Setup Mode itself stays available afterward to add more
    pins later.
 
-   Data lives in its own localStorage key (driversDoughMaps), separate
-   from script.js's own keys, and is included in Backup/Restore via
-   BACKUP_KEYS in script.js. */
+   Pins now live in Supabase (the map_pins table + the dd_create_pin/
+   dd_update_pin/dd_delete_pin functions from supabase_setup.sql), same
+   pattern as auth.js/forum.js: an in-memory cache (pinsCache, keyed by
+   map id) is what all the synchronous rendering code below reads from,
+   refreshed with a real fetch right before it matters -- when the maps
+   picker opens (so pin counts are accurate) and when a specific map
+   opens (so its pins are accurate) -- plus after every create/edit/
+   delete. Creating, moving, and deleting pins is admin-only, enforced
+   again on the server side (not just by hiding the Setup button) by
+   dd_create_pin/dd_update_pin/dd_delete_pin themselves. */
 
 (function () {
+  const sb = window.DD.supabaseClient;
+
   const MAP_DEFS = [
     {
       id: "amazon",
@@ -41,30 +50,77 @@
     },
   ];
 
-  const MAPS_STORAGE_KEY = "driversDoughMaps";
-  let mapsStore = loadMapsStore();
+  // pinsCache[mapId] is null until that map's pins have been fetched at
+  // least once (lets the picker show "…" instead of a wrong "0 pins"),
+  // then an array of {id, number, lat, lng, rotation} after that.
+  let pinsCache = {};
+  MAP_DEFS.forEach((def) => {
+    pinsCache[def.id] = null;
+  });
 
-  function loadMapsStore() {
+  function mapPinRow(row) {
+    return { id: row.id, number: row.number, lat: row.lat, lng: row.lng, rotation: row.rotation || 0 };
+  }
+  async function refreshPinsForMap(mapId) {
     try {
-      const raw = localStorage.getItem(MAPS_STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      return parsed && typeof parsed === "object" ? parsed : {};
+      const { data, error } = await sb
+        .from("map_pins")
+        .select("*")
+        .eq("map_id", mapId)
+        .order("number", { ascending: true });
+      if (error || !data) return false;
+      pinsCache[mapId] = data.map(mapPinRow);
+      return true;
     } catch (err) {
-      return {};
+      return false;
     }
   }
-  function saveMapsStore() {
-    try {
-      localStorage.setItem(MAPS_STORAGE_KEY, JSON.stringify(mapsStore));
-    } catch (err) {}
+  // Loads pin counts for every property at once, for the picker screen.
+  async function refreshAllPinCounts() {
+    await Promise.all(MAP_DEFS.map((def) => refreshPinsForMap(def.id)));
   }
   function getMapRecord(id) {
-    if (!mapsStore[id] || typeof mapsStore[id] !== "object") {
-      mapsStore[id] = { pins: [] };
-      saveMapsStore();
-    }
-    if (!Array.isArray(mapsStore[id].pins)) mapsStore[id].pins = [];
-    return mapsStore[id];
+    return { pins: pinsCache[id] || [] };
+  }
+
+  async function createPin(mapId, number, lat, lng, rotation) {
+    const { data: result, error } = await sb.rpc("dd_create_pin", {
+      p_token: window.DD.auth.getToken(),
+      p_map_id: mapId,
+      p_number: number,
+      p_lat: lat,
+      p_lng: lng,
+      p_rotation: rotation,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
+  }
+  async function updatePin(pinId, number, lat, lng, rotation) {
+    const { data: result, error } = await sb.rpc("dd_update_pin", {
+      p_token: window.DD.auth.getToken(),
+      p_pin_id: pinId,
+      p_number: number,
+      p_lat: lat,
+      p_lng: lng,
+      p_rotation: rotation,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
+  }
+  async function deletePin(pinId) {
+    const { data: result, error } = await sb.rpc("dd_delete_pin", {
+      p_token: window.DD.auth.getToken(),
+      p_pin_id: pinId,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
+  }
+  function showServerError(error) {
+    window.DD.modal?.show({
+      top: "COULDN'T DO THAT",
+      bottom: (error || "Something went wrong. Try again.").toUpperCase(),
+      okText: "OK",
+    });
   }
   // The suggested number for a fresh pin drop is always the LOWEST
   // positive integer not already used by a pin on this property -- never
@@ -83,9 +139,6 @@
     let n = 1;
     while (used.has(n)) n++;
     return n;
-  }
-  function genPinId() {
-    return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -204,7 +257,8 @@
       addr.textContent = def.address;
       const count = document.createElement("span");
       count.className = "dd-maps-picker-count";
-      count.textContent = rec.pins.length + (rec.pins.length === 1 ? " pin placed" : " pins placed");
+      count.textContent =
+        pinsCache[def.id] === null ? "…" : rec.pins.length + (rec.pins.length === 1 ? " pin placed" : " pins placed");
       item.appendChild(name);
       item.appendChild(addr);
       item.appendChild(count);
@@ -217,6 +271,10 @@
     renderMapsPicker();
     mapsPickerOverlay?.classList.add("is-open");
     mapsPickerOverlay?.setAttribute("aria-hidden", "false");
+    // Fire-and-forget: shows "…" counts first, then real numbers once
+    // this resolves -- same instant-open-then-fill-in feel as the map
+    // view itself below.
+    refreshAllPinCounts().then(renderMapsPicker);
   }
   function closeMapsPicker() {
     mapsPickerOverlay?.classList.remove("is-open");
@@ -323,7 +381,7 @@
   recenterBtn?.addEventListener("click", recenterOnMe);
 
   // === Full-screen map view ===
-  function openMapView(mapId) {
+  async function openMapView(mapId) {
     const def = MAP_DEFS.find((m) => m.id === mapId);
     if (!def) return;
     currentMapId = mapId;
@@ -381,11 +439,12 @@
     }
 
     mapLeaflet.setView([def.center.lat, def.center.lng], 19);
-    setTimeout(() => {
-      mapLeaflet.invalidateSize();
-      renderPermanentPins();
-    }, 60);
+    setTimeout(() => mapLeaflet.invalidateSize(), 60);
     startLocationFollow();
+    // Pins come from the server every time a map opens, so a pin an
+    // admin placed from a different phone shows up here too.
+    await refreshPinsForMap(mapId);
+    renderPermanentPins();
   }
   function closeMapView() {
     setSetupMode(false);
@@ -546,35 +605,40 @@
     if (badge) badge.textContent = e.target.value || "?";
   });
 
-  function confirmPendingPin() {
+  // The map_pins table stores the house number as a real integer (not
+  // free text), so this both validates and converts -- "5" is fine,
+  // "5a" or "" is not.
+  function parsePinNumber(raw) {
+    const trimmed = (raw || "").trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    return parseInt(trimmed, 10);
+  }
+
+  async function confirmPendingPin() {
     if (!pendingMarker || !currentMapId) return;
-    const numberVal = (setupNumberInput?.value || "").trim();
-    if (!numberVal) {
-      if (setupInstructions) setupInstructions.textContent = "Enter a number before confirming.";
+    const numberInt = parsePinNumber(setupNumberInput?.value);
+    if (numberInt === null) {
+      if (setupInstructions) setupInstructions.textContent = "Enter a whole number before confirming.";
       return;
     }
-    const rec = getMapRecord(currentMapId);
     const ll = pendingMarker.getLatLng();
+    const mapId = currentMapId;
 
-    if (editingPinId) {
-      const pin = rec.pins.find((p) => p.id === editingPinId);
-      if (pin) {
-        pin.number = numberVal;
-        pin.lat = ll.lat;
-        pin.lng = ll.lng;
-        pin.rotation = pendingRotation;
-        saveMapsStore();
-      }
-      exitPendingEditOrPlace();
-      if (setupInstructions) setupInstructions.textContent = readyMessage();
+    if (setupConfirmBtn) setupConfirmBtn.disabled = true;
+    const result = editingPinId
+      ? await updatePin(editingPinId, numberInt, ll.lat, ll.lng, pendingRotation)
+      : await createPin(mapId, numberInt, ll.lat, ll.lng, pendingRotation);
+    if (setupConfirmBtn) setupConfirmBtn.disabled = false;
+
+    if (!result || !result.ok) {
+      showServerError(result && result.error);
       return;
     }
 
-    rec.pins.push({ id: genPinId(), number: numberVal, lat: ll.lat, lng: ll.lng, rotation: pendingRotation });
-    // No counter to advance -- the next suggestion is recomputed fresh
-    // (readyMessage/handleMapClick both call lowestAvailableNumber) from
-    // whatever pins exist now, including this one.
-    saveMapsStore();
+    // Re-fetch so the pin just created/edited (and its server-assigned
+    // id, for a new one) is what's actually on screen -- same
+    // refresh-after-mutation pattern forum.js uses.
+    await refreshPinsForMap(mapId);
     exitPendingEditOrPlace();
     if (setupInstructions) setupInstructions.textContent = readyMessage();
   }
@@ -582,11 +646,21 @@
     exitPendingEditOrPlace();
     if (setupInstructions) setupInstructions.textContent = readyMessage();
   }
-  function deletePendingPin() {
+  async function deletePendingPin() {
     if (!editingPinId || !currentMapId) return;
-    const rec = getMapRecord(currentMapId);
-    rec.pins = rec.pins.filter((p) => p.id !== editingPinId);
-    saveMapsStore();
+    const mapId = currentMapId;
+    const pinId = editingPinId;
+
+    if (setupDeleteBtn) setupDeleteBtn.disabled = true;
+    const result = await deletePin(pinId);
+    if (setupDeleteBtn) setupDeleteBtn.disabled = false;
+
+    if (!result || !result.ok) {
+      showServerError(result && result.error);
+      return;
+    }
+
+    await refreshPinsForMap(mapId);
     exitPendingEditOrPlace();
     if (setupInstructions) setupInstructions.textContent = "Pin deleted. " + readyMessage();
   }

@@ -3,66 +3,43 @@
 // boards: Shift Swap (structured swap requests), General Chat, App Issues,
 // Feature Requests (plain discussion threads + replies).
 //
-// FRAMEWORK NOTE: there's no backend or login system yet, so this whole
-// feature is localStorage-backed and every post is authored by a single
-// local placeholder user (shown as "You"). The data shape already has a
-// real author {id, name} on every thread/reply though, and every mutation
-// goes through the small set of functions below (getBoardThreads,
-// createThread, addReply, toggleSwapStatus, deleteThread, deleteReply) --
-// when the real backend + login exist, those functions are what get
-// rewritten to call the API instead of localStorage, and getCurrentUser()
-// is what gets rewritten to return the real logged-in account. Nothing
-// about the rendering/UI code below needs to know the difference.
+// Talks to the real Supabase backend now (forum_threads/forum_replies
+// tables + the dd_create_thread/dd_add_reply/dd_toggle_swap_status/
+// dd_delete_thread/dd_delete_reply functions from supabase_setup.sql).
+// Posts made here are visible to every driver, not just the phone that
+// made them.
+//
+// Data-flow pattern: getBoardThreads()/getThread() stay SYNCHRONOUS (the
+// rendering code below expects an instant answer, same as it always
+// has) by reading from an in-memory cache (threadsCache) instead of
+// hitting the network on every render. That cache gets refreshed with a
+// real fetch from Supabase right before anything reads it fresh: when
+// the Forum is opened, and after any post/reply/delete/toggle. This is
+// the same "cache + refresh at the right moments" approach auth.js uses
+// for the login session.
 (function () {
   window.DD = window.DD || {};
+
+  const sb = window.DD.supabaseClient;
 
   const BOARDS = [
     { id: "shift-swap", name: "Shift Swap", description: "Looking to trade or cover a shift?", type: "swap" },
     { id: "general-chat", name: "General Chat", description: "Anything driver-related.", type: "discussion" },
     { id: "app-issues", name: "App Issues", description: "Something broken or confusing?", type: "discussion" },
     { id: "feature-requests", name: "Feature Requests", description: "Ideas for Driver's Dough.", type: "discussion" },
+    { id: "codes", name: "Codes", description: "New codes, or codes that stopped working.", type: "discussion" },
   ];
 
-  const STORAGE_KEY = "driversDoughForum";
-
-  function loadStore() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      if (!parsed || typeof parsed !== "object") return { currentUserId: null, threads: [] };
-      if (!Array.isArray(parsed.threads)) parsed.threads = [];
-      return parsed;
-    } catch (err) {
-      return { currentUserId: null, threads: [] };
-    }
-  }
-  function saveStore() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-    } catch (err) {}
-  }
-  let store = loadStore();
-
-  function genId(prefix) {
-    return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  function boardById(id) {
+    return BOARDS.find((b) => b.id === id) || null;
   }
 
-  // Placeholder identity until real accounts exist -- a stable per-device
-  // id (so "is this my post" checks work) with a fixed "You" display name.
-  // A real login system replaces this function's return value with the
-  // actual logged-in user; every author field elsewhere already just
-  // stores whatever {id, name} this returns, so nothing else changes.
   function getCurrentUser() {
     const session = window.DD.auth && window.DD.auth.getSession();
-    if (session) return { id: session.id, name: session.name };
-    // Fallback only -- the auth gate blocks the whole app, so in practice
-    // the Forum is never reachable without a session. Kept so the Forum
-    // doesn't hard-crash if it's ever opened before auth.js runs.
-    if (!store.currentUserId) {
-      store.currentUserId = genId("u");
-      saveStore();
-    }
-    return { id: store.currentUserId, name: "You" };
+    return session ? { id: session.id, name: session.name } : { id: null, name: "You" };
+  }
+  function getToken() {
+    return window.DD.auth && window.DD.auth.getToken();
   }
 
   function escapeHtml(s) {
@@ -81,13 +58,55 @@
     return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
-  function boardById(id) {
-    return BOARDS.find((b) => b.id === id) || null;
+  // --- Data: cache + refresh ----------------------------------------------
+  let threadsCache = [];
+
+  function mapReplyRow(row) {
+    return {
+      id: row.id,
+      body: row.body,
+      authorId: row.author_id,
+      authorName: row.author_name,
+      createdAt: new Date(row.created_at).getTime(),
+    };
+  }
+  function mapThreadRow(row) {
+    const replies = (row.forum_replies || []).map(mapReplyRow).sort((a, b) => a.createdAt - b.createdAt);
+    return {
+      id: row.id,
+      boardId: row.board_id,
+      type: row.type,
+      title: row.title,
+      body: row.body,
+      date: row.swap_date,
+      shift: row.swap_shift,
+      note: row.note,
+      status: row.status,
+      authorId: row.author_id,
+      authorName: row.author_name,
+      createdAt: new Date(row.created_at).getTime(),
+      replies,
+    };
   }
 
-  // --- Data operations ---------------------------------------------------
+  // Refetches every thread (with its replies nested in, in one request)
+  // from Supabase. There are only four boards for a small crew of
+  // drivers, so pulling everything at once is simpler than fetching
+  // per-board and plenty fast enough.
+  async function refreshCache() {
+    try {
+      const { data, error } = await sb.from("forum_threads").select("*, forum_replies(*)").order("created_at", { ascending: false });
+      if (error || !data) return false;
+      threadsCache = data.map(mapThreadRow);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  // --- Data operations ------------------------------------------------
   function getBoardThreads(boardId) {
-    const threads = store.threads.filter((t) => t.boardId === boardId);
+    const threads = threadsCache.filter((t) => t.boardId === boardId);
     const board = boardById(boardId);
     if (board && board.type === "swap") {
       // Open requests first (soonest shift date first), filled ones after.
@@ -100,47 +119,43 @@
     return threads.slice().sort((a, b) => b.createdAt - a.createdAt);
   }
   function getThread(id) {
-    return store.threads.find((t) => t.id === id) || null;
+    return threadsCache.find((t) => t.id === id) || null;
   }
-  function createThread(boardId, data) {
-    const user = getCurrentUser();
-    const thread = {
-      id: genId("t"),
-      boardId,
-      authorId: user.id,
-      authorName: user.name,
-      createdAt: Date.now(),
-      replies: [],
-      ...data,
-    };
-    store.threads.push(thread);
-    saveStore();
-    return thread;
+
+  async function createThread(boardId, data) {
+    const board = boardById(boardId);
+    const { data: result, error } = await sb.rpc("dd_create_thread", {
+      p_token: getToken(),
+      p_board_id: boardId,
+      p_type: board ? board.type : "discussion",
+      p_title: data.title ?? null,
+      p_body: data.body ?? null,
+      p_swap_date: data.date ?? null,
+      p_swap_shift: data.shift ?? null,
+      p_note: data.note ?? null,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
   }
-  function addReply(threadId, body) {
-    const thread = getThread(threadId);
-    if (!thread) return null;
-    const user = getCurrentUser();
-    const reply = { id: genId("r"), authorId: user.id, authorName: user.name, body, createdAt: Date.now() };
-    thread.replies.push(reply);
-    saveStore();
-    return reply;
+  async function addReply(threadId, body) {
+    const { data: result, error } = await sb.rpc("dd_add_reply", { p_token: getToken(), p_thread_id: threadId, p_body: body });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
   }
-  function toggleSwapStatus(threadId) {
-    const thread = getThread(threadId);
-    if (!thread) return;
-    thread.status = thread.status === "open" ? "filled" : "open";
-    saveStore();
+  async function toggleSwapStatus(threadId) {
+    const { data: result, error } = await sb.rpc("dd_toggle_swap_status", { p_token: getToken(), p_thread_id: threadId });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
   }
-  function deleteThread(threadId) {
-    store.threads = store.threads.filter((t) => t.id !== threadId);
-    saveStore();
+  async function deleteThread(threadId) {
+    const { data: result, error } = await sb.rpc("dd_delete_thread", { p_token: getToken(), p_thread_id: threadId });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
   }
-  function deleteReply(threadId, replyId) {
-    const thread = getThread(threadId);
-    if (!thread) return;
-    thread.replies = thread.replies.filter((r) => r.id !== replyId);
-    saveStore();
+  async function deleteReply(threadId, replyId) {
+    const { data: result, error } = await sb.rpc("dd_delete_reply", { p_token: getToken(), p_reply_id: replyId });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
   }
 
   window.DD.forum = { BOARDS, getCurrentUser, getBoardThreads, getThread, createThread, addReply, toggleSwapStatus, deleteThread, deleteReply };
@@ -161,20 +176,33 @@
     menuBtn?.setAttribute("aria-expanded", "false");
   }
 
+  function showLoading() {
+    if (bodyEl) bodyEl.innerHTML = '<p class="dd-calc-waiting">Loading…</p>';
+  }
+  function showServerError(error) {
+    window.DD.modal?.show({
+      top: "COULDN'T DO THAT",
+      bottom: (error || "Something went wrong. Try again.").toUpperCase(),
+      okText: "OK",
+    });
+  }
+
   let view = "boards"; // "boards" | "board" | "thread"
   let activeBoardId = null;
   let activeThreadId = null;
   let showNewForm = false;
 
-  function openForum() {
+  async function openForum() {
     closeHamburgerMenuLocal();
     view = "boards";
     activeBoardId = null;
     activeThreadId = null;
     showNewForm = false;
-    render();
     overlay?.classList.add("is-open");
     overlay?.setAttribute("aria-hidden", "false");
+    showLoading();
+    await refreshCache();
+    render();
   }
   function closeForum() {
     overlay?.classList.remove("is-open");
@@ -337,7 +365,7 @@
   function formatDateNice(dateStr) {
     // dateStr is "YYYY-MM-DD" from <input type="date">; parse as LOCAL, not
     // UTC, or it can print as the day before.
-    const [y, m, d] = dateStr.split("-").map(Number);
+    const [y, m, d] = (dateStr || "").split("-").map(Number);
     if (!y || !m || !d) return dateStr;
     const dt = new Date(y, m - 1, d);
     return dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
@@ -372,15 +400,24 @@
       showNewForm = false;
       renderBoard();
     });
-    postBtn.addEventListener("click", () => {
+    postBtn.addEventListener("click", async () => {
       const data = fields.getData();
       if (!data) {
         msg.textContent = fields.errorMsg;
         msg.classList.remove("hide");
         return;
       }
-      createThread(board.id, data);
+      postBtn.disabled = true;
+      const result = await createThread(board.id, data);
+      postBtn.disabled = false;
+      if (!result || !result.ok) {
+        msg.textContent = (result && result.error) || "Couldn't post that. Try again.";
+        msg.classList.remove("hide");
+        return;
+      }
       showNewForm = false;
+      showLoading();
+      await refreshCache();
       renderBoard();
     });
     actions.appendChild(cancelBtn2);
@@ -535,8 +572,15 @@
       toggleBtn.type = "button";
       toggleBtn.className = "btn-secondary";
       toggleBtn.textContent = thread.status === "open" ? "Mark Filled" : "Reopen";
-      toggleBtn.addEventListener("click", () => {
-        toggleSwapStatus(thread.id);
+      toggleBtn.addEventListener("click", async () => {
+        toggleBtn.disabled = true;
+        const result = await toggleSwapStatus(thread.id);
+        if (!result || !result.ok) {
+          toggleBtn.disabled = false;
+          showServerError(result && result.error);
+          return;
+        }
+        await refreshCache();
         renderThread();
       });
       actions.appendChild(toggleBtn);
@@ -591,10 +635,17 @@
     postReplyBtn.type = "button";
     postReplyBtn.className = "btn-primary";
     postReplyBtn.textContent = "Post Reply";
-    postReplyBtn.addEventListener("click", () => {
+    postReplyBtn.addEventListener("click", async () => {
       const body = textarea.value.trim();
       if (!body) return;
-      addReply(thread.id, body);
+      postReplyBtn.disabled = true;
+      const result = await addReply(thread.id, body);
+      postReplyBtn.disabled = false;
+      if (!result || !result.ok) {
+        showServerError(result && result.error);
+        return;
+      }
+      await refreshCache();
       renderThread();
     });
     replyForm.appendChild(textarea);
@@ -611,10 +662,15 @@
       okText: "Delete",
       cancelText: "Cancel",
       danger: true,
-      onOk: () => {
-        deleteThread(thread.id);
+      onOk: async () => {
+        const result = await deleteThread(thread.id);
+        if (!result || !result.ok) {
+          showServerError(result && result.error);
+          return;
+        }
         view = "board";
         activeThreadId = null;
+        await refreshCache();
         render();
       },
     });
@@ -626,8 +682,13 @@
       okText: "Delete",
       cancelText: "Cancel",
       danger: true,
-      onOk: () => {
-        deleteReply(thread.id, reply.id);
+      onOk: async () => {
+        const result = await deleteReply(thread.id, reply.id);
+        if (!result || !result.ok) {
+          showServerError(result && result.error);
+          return;
+        }
+        await refreshCache();
         renderThread();
       },
     });

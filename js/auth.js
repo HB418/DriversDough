@@ -1,87 +1,112 @@
 // js/auth.js
-// Sign up / log in gate + the "backend" behind it.
+// Sign up / log in gate, now talking to the real Supabase backend.
 //
-// FRAMEWORK NOTE: there's no real server yet, so signUp/logIn/logOut/
-// getSession below are implemented against localStorage. They're written
-// the way a real API client would be -- signUp/logIn are async and return
-// { ok, error } -- specifically so that when a real backend exists, only
-// the INSIDES of these functions change (localStorage reads/writes become
-// fetch() calls to real endpoints); every caller (this file's own UI, and
-// window.DD.forum's getCurrentUser()) already awaits them and branches on
-// {ok, error} exactly like it would against a real API.
+// The public shape of window.DD.auth is UNCHANGED from the localStorage
+// version this replaced: getSession/isLoggedIn/signUp/logIn/logOut. That
+// was the whole point of writing the old version the way it was written
+// -- every other file that uses this (forum.js's getCurrentUser(),
+// maps.js's admin check) needed zero changes to work against a real
+// backend.
 //
-// Passwords are stored as a salted SHA-256 hash (Web Crypto), never
-// plaintext -- but to be honest about what that does and doesn't buy:
-// this still isn't real server-side auth. Anyone with access to this
-// device's localStorage can see the hashes (though not the passwords
-// themselves), and there's no rate limiting, no email verification, no
-// password reset. Treat this as the placeholder it is until the real
-// backend exists.
+// One real change under the hood: getSession() has to stay SYNCHRONOUS
+// (lots of code calls it expecting an instant answer, not a Promise), but
+// checking a login with a real server is inherently a network call. The
+// fix is the same one Supabase's own client uses: keep a small in-memory
+// cache of "who's logged in right now" (cachedSession below), refresh it
+// from the server on page load / login / signup / logout, and have
+// getSession() just read that cache. It's accurate the entire time
+// someone's using the app; it just takes one network round-trip to fill
+// in when the page first loads (the auth gate stays up and covers the
+// whole screen until that finishes, so there's no flash of the app
+// underneath while that happens).
 //
-// ACCESS CODE: one shared code, required to sign up. Change it by editing
-// ACCESS_CODE below (there's no admin screen for it yet -- that's part of
-// "the rest of it" waiting on the real backend).
-//
-// ADMIN ACCESS CODE: a second, separate code that signs up an admin
-// account instead of a regular driver account. Map creation (Setup Mode
-// in Maps) is restricted to admin accounts -- everyone else can view
-// pins once they exist, but only an admin can add/move/delete them. Keep
-// this code to yourself; don't share it the way ACCESS_CODE gets shared
-// with drivers.
+// The access codes themselves (VILLA2026 for drivers, VILLAOWNER2026 for
+// the admin/owner account) no longer live in this file at all -- they're
+// checked inside the dd_sign_up() function in the database, which is a
+// real security improvement over the old framework version: this file's
+// source (which anyone can view) never reveals what the codes are.
 (function () {
   window.DD = window.DD || {};
 
-  const ACCESS_CODE = "VILLA2026";
-  const ADMIN_ACCESS_CODE = "VILLAOWNER2026";
+  // From your Supabase project's Settings > API Keys ("Legacy anon,
+  // service_role API keys" tab -- the anon key here, not service_role).
+  // This key is meant to be public -- it's safe to ship in client-side
+  // code like this, as long as (like here) the database's tables are
+  // locked down with Row Level Security and only reachable through the
+  // specific functions supabase_setup.sql created.
+  const SUPABASE_URL = "https://nbxxmrngbhtekowcihnb.supabase.co";
+  const SUPABASE_ANON_KEY =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5ieHhtcm5nYmh0ZWtvd2NpaG5iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc0NzYxNDUsImV4cCI6MjEwMzA1MjE0NX0.UoEaLeYG1SiJdpXMhon7E04a1ofVp9M5MTrkCablW3A";
+
+  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  // Shared with forum.js/maps.js so every file uses the same one client
+  // instance instead of each creating its own.
+  window.DD.supabaseClient = sb;
 
   const STORAGE_KEY = "driversDoughAuth";
 
-  function loadStore() {
+  // Only the session token is kept on this device -- everything else
+  // (accounts, password hashes) lives in the database now, not here.
+  function readStoredToken() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      if (!parsed || typeof parsed !== "object") return { accounts: [], sessionUserId: null };
-      if (!Array.isArray(parsed.accounts)) parsed.accounts = [];
-      return parsed;
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed && parsed.token ? parsed.token : null;
     } catch (err) {
-      return { accounts: [], sessionUserId: null };
+      return null;
     }
   }
-  function saveStore() {
+  function writeStoredToken(token) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ token }));
     } catch (err) {}
   }
-  let store = loadStore();
-
-  function genId(prefix) {
-    return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  function clearStoredToken() {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (err) {}
   }
 
-  function randomSaltHex() {
-    const arr = new Uint8Array(16);
-    crypto.getRandomValues(arr);
-    return Array.from(arr).map((b) => b.toString(16).padStart(2, "0")).join("");
-  }
-  async function hashPassword(password, saltHex) {
-    const data = new TextEncoder().encode(saltHex + ":" + password);
-    const digest = await crypto.subtle.digest("SHA-256", data);
-    return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
-  }
-
-  function findAccountByUsername(username) {
-    const needle = username.trim().toLowerCase();
-    return store.accounts.find((a) => a.username.toLowerCase() === needle) || null;
-  }
+  let cachedSession = null; // { id, username, name, isAdmin } | null
 
   function getSession() {
-    if (!store.sessionUserId) return null;
-    const account = store.accounts.find((a) => a.id === store.sessionUserId);
-    if (!account) return null;
-    return { id: account.id, username: account.username, name: account.name, isAdmin: account.role === "admin" };
+    return cachedSession;
   }
   function isLoggedIn() {
-    return !!getSession();
+    return !!cachedSession;
+  }
+  // Other first-party files (forum.js, maps.js) need the raw token to
+  // prove who they are when calling their own write functions on the
+  // server (dd_create_thread, dd_create_pin, etc. all take p_token).
+  // This is the same token already sitting in localStorage -- just a
+  // read, not a new thing being exposed.
+  function getToken() {
+    return readStoredToken();
+  }
+
+  function applySession(token, account) {
+    cachedSession = { id: account.id, username: account.username, name: account.name, isAdmin: !!account.isAdmin };
+    writeStoredToken(token);
+  }
+
+  // Called once when the app loads: if a token was saved from a previous
+  // visit, ask the server whether it's still good and fill in
+  // cachedSession from that -- this is what makes "stay logged in on
+  // this device" work across reloads.
+  async function restoreSession() {
+    const token = readStoredToken();
+    if (!token) return null;
+    try {
+      const { data, error } = await sb.rpc("dd_get_session", { p_token: token });
+      if (error || !data) {
+        clearStoredToken();
+        return null;
+      }
+      cachedSession = { id: data.id, username: data.username, name: data.name, isAdmin: !!data.isAdmin };
+      return cachedSession;
+    } catch (err) {
+      return null;
+    }
   }
 
   async function signUp({ accessCode, username, password, confirmPassword, name }) {
@@ -89,45 +114,63 @@
     name = (name || "").trim();
     password = password || "";
     confirmPassword = confirmPassword || "";
-    const trimmedCode = (accessCode || "").trim();
-    let role;
-    if (trimmedCode === ADMIN_ACCESS_CODE) role = "admin";
-    else if (trimmedCode === ACCESS_CODE) role = "driver";
-    else return { ok: false, error: "That access code isn't valid." };
+    // Quick client-side checks first so obvious mistakes don't need a
+    // round trip -- the database re-checks all of this too either way.
     if (!name) return { ok: false, error: "Enter your name." };
     if (username.length < 3) return { ok: false, error: "Username must be at least 3 characters." };
     if (password.length < 6) return { ok: false, error: "Password must be at least 6 characters." };
     if (password !== confirmPassword) return { ok: false, error: "Passwords don't match." };
-    if (findAccountByUsername(username)) return { ok: false, error: "That username is already taken." };
 
-    const salt = randomSaltHex();
-    const passwordHash = await hashPassword(password, salt);
-    const account = { id: genId("acc"), username, name, role, salt, passwordHash, createdAt: Date.now() };
-    store.accounts.push(account);
-    store.sessionUserId = account.id;
-    saveStore();
-    return { ok: true };
+    try {
+      const { data, error } = await sb.rpc("dd_sign_up", {
+        p_access_code: (accessCode || "").trim(),
+        p_username: username,
+        p_password: password,
+        p_name: name,
+      });
+      if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+      if (!data.ok) return { ok: false, error: data.error };
+      applySession(data.token, data.account);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    }
   }
 
   async function logIn({ username, password }) {
     username = (username || "").trim();
     password = password || "";
     if (!username || !password) return { ok: false, error: "Enter your username and password." };
-    const account = findAccountByUsername(username);
-    if (!account) return { ok: false, error: "No account found with that username." };
-    const hash = await hashPassword(password, account.salt);
-    if (hash !== account.passwordHash) return { ok: false, error: "Incorrect password." };
-    store.sessionUserId = account.id;
-    saveStore();
-    return { ok: true };
+
+    try {
+      const { data, error } = await sb.rpc("dd_log_in", { p_username: username, p_password: password });
+      if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+      if (!data.ok) return { ok: false, error: data.error };
+      applySession(data.token, data.account);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    }
   }
 
+  // Clears the local session immediately (so the UI reacts right away),
+  // then tells the server to forget this token in the background. Not
+  // awaited by callers -- there's nothing left for them to wait on once
+  // the local clear above has happened.
   function logOut() {
-    store.sessionUserId = null;
-    saveStore();
+    const token = readStoredToken();
+    cachedSession = null;
+    clearStoredToken();
+    if (token) {
+      // sb.rpc() returns a "thenable" builder, not a real Promise, so it
+      // doesn't have .catch() itself -- Promise.resolve() adopts it into
+      // a real Promise first. Fire-and-forget: nothing to do if this
+      // fails, the local session is already cleared either way.
+      Promise.resolve(sb.rpc("dd_log_out", { p_token: token })).catch(() => {});
+    }
   }
 
-  window.DD.auth = { getSession, isLoggedIn, signUp, logIn, logOut };
+  window.DD.auth = { getSession, isLoggedIn, getToken, signUp, logIn, logOut };
 
   // --- UI --------------------------------------------------------------
   const gate = document.getElementById("dd-auth-gate");
@@ -165,9 +208,12 @@
     refreshMenuUserLabel();
   }
 
-  // On load: if there's already a session (stays logged in on this device
-  // until Log Out), skip straight past the gate.
-  if (isLoggedIn()) enterApp();
+  // On load: the gate is visible by default (see css/auth.css) so there's
+  // no flash of the app underneath while this network check is in
+  // flight. If a saved session checks out, skip straight past the gate.
+  restoreSession().then((session) => {
+    if (session) enterApp();
+  });
 
   loginForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
