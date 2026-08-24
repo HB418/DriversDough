@@ -114,6 +114,52 @@ create policy "access codes are viewable by everyone" on public.access_codes
 -- Same pattern as map pins: everyone can read, only dd_create_code/
 -- dd_update_code/dd_delete_code (below) can write, admin-only.
 
+create table if not exists public.delivery_entries (
+  id uuid primary key default gen_random_uuid(),
+  account_id uuid not null references public.accounts (id) on delete cascade,
+  street text not null default '',
+  order_type text not null default '',
+  total text not null default '',
+  tip text not null default '',
+  fee text not null default '',
+  cash_tip boolean not null default false,
+  partial_cash_tip boolean not null default false,
+  partial_cash_amount text not null default '',
+  entry_time text not null default '',
+  created_at timestamptz not null default now()
+);
+alter table public.delivery_entries enable row level security;
+-- No policies on purpose, same as accounts/sessions: this is one driver's
+-- own shift data, nobody else's business (including other drivers seeing
+-- it in the app) -- everything goes through the account-scoped functions
+-- below, every one of which only ever touches the calling driver's own
+-- account_id. There is no admin-bypass anywhere in these functions.
+
+create table if not exists public.daily_stats (
+  account_id uuid not null references public.accounts (id) on delete cascade,
+  date_key text not null,
+  hour_key text not null,
+  deliveries int not null default 0,
+  tip_count int not null default 0,
+  tip_value numeric not null default 0,
+  order_total numeric not null default 0,
+  fee_counts jsonb not null default '{}'::jsonb,
+  tip_buckets jsonb not null default '{}'::jsonb,
+  primary key (account_id, date_key, hour_key)
+);
+alter table public.daily_stats enable row level security;
+-- Same as above: this driver's own permanent stats archive, function-only.
+
+create table if not exists public.time_card (
+  account_id uuid not null references public.accounts (id) on delete cascade,
+  date_key text not null,
+  shifts jsonb not null default '[]'::jsonb,
+  cc_gratuity text,
+  primary key (account_id, date_key)
+);
+alter table public.time_card enable row level security;
+-- Same as above: this driver's own punch clock, function-only.
+
 -- ============================================================
 -- INTERNAL HELPER (not callable directly by the app -- only by the
 -- functions below, which run with elevated privileges)
@@ -134,6 +180,26 @@ begin
     where s.token = p_token;
   return v_account;
 end;
+$$;
+
+-- Adds two jsonb objects of number-like values together key by key (e.g.
+-- {"4.00": 1, "5.00": 2} + {"4.00": 3} -> {"4.00": 4, "5.00": 2}). Used by
+-- dd_end_night below to fold a fresh End Night's fee/tip-bucket counts
+-- into whatever's already archived for that hour, instead of overwriting.
+create or replace function public.dd_jsonb_sum(a jsonb, b jsonb) returns jsonb
+language sql
+immutable
+as $$
+  select coalesce(jsonb_object_agg(key, total), '{}'::jsonb)
+  from (
+    select key, sum(value::numeric) as total
+    from (
+      select * from jsonb_each_text(coalesce(a, '{}'::jsonb))
+      union all
+      select * from jsonb_each_text(coalesce(b, '{}'::jsonb))
+    ) pairs
+    group by key
+  ) summed
 $$;
 
 -- ============================================================
@@ -566,6 +632,255 @@ end;
 $$;
 
 -- ============================================================
+-- DELIVERY ENTRIES / TIME CARD / STATS FUNCTIONS
+--
+-- Every function below is scoped strictly to public.dd_account_for_token's
+-- own account_id -- a driver (including the admin account) only ever
+-- reads or writes their OWN data through these. There is deliberately no
+-- "see every driver's entries" function anywhere: Heath was explicit the
+-- app itself should never surface that, even though it's fine for all
+-- drivers' rows to coexist in the same tables.
+-- ============================================================
+
+-- Three separate get functions (entries / time card / stats history)
+-- rather than one combined one -- entries change every delivery, the time
+-- card changes every punch, but the stats archive only changes once a
+-- night (End Night), so the app only re-fetches the piece that actually
+-- changed instead of re-downloading everything (including years of
+-- archived stats) on every small update.
+create or replace function public.dd_get_entries(p_token text) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+  v_entries jsonb;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null then
+    return jsonb_build_object('ok', false, 'error', 'Not logged in.');
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+      'id', id, 'street', street, 'orderType', order_type, 'total', total, 'tip', tip,
+      'fee', fee, 'cashTip', cash_tip, 'partialCashTip', partial_cash_tip,
+      'partialCashAmount', partial_cash_amount, 'time', entry_time
+    ) order by created_at asc), '[]'::jsonb)
+    into v_entries
+    from public.delivery_entries where account_id = v_account.id;
+
+  return jsonb_build_object('ok', true, 'entries', v_entries);
+end;
+$$;
+
+create or replace function public.dd_get_time_card(p_token text) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+  v_timecard jsonb;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null then
+    return jsonb_build_object('ok', false, 'error', 'Not logged in.');
+  end if;
+
+  select coalesce(jsonb_object_agg(date_key, jsonb_build_object('shifts', shifts, 'ccGratuity', cc_gratuity)), '{}'::jsonb)
+    into v_timecard
+    from public.time_card where account_id = v_account.id;
+
+  return jsonb_build_object('ok', true, 'timeCard', v_timecard);
+end;
+$$;
+
+create or replace function public.dd_get_stats_history(p_token text) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+  v_stats jsonb;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null then
+    return jsonb_build_object('ok', false, 'error', 'Not logged in.');
+  end if;
+
+  select coalesce(jsonb_object_agg(date_key, hours), '{}'::jsonb) into v_stats
+    from (
+      select date_key, jsonb_object_agg(hour_key, jsonb_build_object(
+          'deliveries', deliveries, 'tipCount', tip_count, 'tipValue', tip_value,
+          'orderTotal', order_total, 'feeCounts', fee_counts, 'tipBuckets', tip_buckets
+        )) as hours
+        from public.daily_stats where account_id = v_account.id
+        group by date_key
+    ) d;
+
+  return jsonb_build_object('ok', true, 'statsHistory', v_stats);
+end;
+$$;
+
+create or replace function public.dd_create_entry(
+  p_token text, p_street text, p_order_type text, p_total text, p_tip text, p_fee text,
+  p_cash_tip boolean, p_partial_cash_tip boolean, p_partial_cash_amount text, p_time text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+  v_id uuid;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null then
+    return jsonb_build_object('ok', false, 'error', 'Not logged in.');
+  end if;
+
+  insert into public.delivery_entries
+    (account_id, street, order_type, total, tip, fee, cash_tip, partial_cash_tip, partial_cash_amount, entry_time)
+  values
+    (v_account.id, p_street, p_order_type, p_total, p_tip, p_fee, p_cash_tip, p_partial_cash_tip, p_partial_cash_amount, p_time)
+  returning id into v_id;
+
+  return jsonb_build_object('ok', true, 'id', v_id);
+end;
+$$;
+
+create or replace function public.dd_update_entry(
+  p_token text, p_entry_id uuid, p_street text, p_order_type text, p_total text, p_tip text, p_fee text,
+  p_cash_tip boolean, p_partial_cash_tip boolean, p_partial_cash_amount text, p_time text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null then
+    return jsonb_build_object('ok', false, 'error', 'Not logged in.');
+  end if;
+
+  update public.delivery_entries set
+    street = p_street, order_type = p_order_type, total = p_total, tip = p_tip, fee = p_fee,
+    cash_tip = p_cash_tip, partial_cash_tip = p_partial_cash_tip,
+    partial_cash_amount = p_partial_cash_amount, entry_time = p_time
+    where id = p_entry_id and account_id = v_account.id;
+
+  if not found then
+    return jsonb_build_object('ok', false, 'error', 'That delivery no longer exists.');
+  end if;
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.dd_delete_entry(p_token text, p_entry_id uuid) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null then
+    return jsonb_build_object('ok', false, 'error', 'Not logged in.');
+  end if;
+
+  delete from public.delivery_entries where id = p_entry_id and account_id = v_account.id;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- Punching in/out only ever touches TODAY's time card record, so this
+-- takes the one day's already-computed shifts array and stores it --
+-- lighter than resending the whole time card for a single punch.
+create or replace function public.dd_set_shifts(p_token text, p_date_key text, p_shifts jsonb) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null then
+    return jsonb_build_object('ok', false, 'error', 'Not logged in.');
+  end if;
+
+  insert into public.time_card (account_id, date_key, shifts, cc_gratuity)
+  values (v_account.id, p_date_key, coalesce(p_shifts, '[]'::jsonb), null)
+  on conflict (account_id, date_key) do update set shifts = excluded.shifts;
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- End Night: folds tonight's already-computed per-hour stat deltas into
+-- the permanent archive (adding onto whatever's already there for that
+-- hour, since the same hour can accumulate across more than one End
+-- Night), stamps today's CC gratuity onto the time card, and clears every
+-- current delivery for this account -- all three together, so a dropped
+-- connection partway through can't leave stats archived but entries not
+-- cleared (or vice versa).
+create or replace function public.dd_end_night(
+  p_token text, p_date_key text, p_deltas jsonb, p_cc_gratuity text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+  v_hour_key text;
+  v_bucket jsonb;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null then
+    return jsonb_build_object('ok', false, 'error', 'Not logged in.');
+  end if;
+
+  for v_hour_key, v_bucket in select * from jsonb_each(coalesce(p_deltas, '{}'::jsonb))
+  loop
+    insert into public.daily_stats (account_id, date_key, hour_key, deliveries, tip_count, tip_value, order_total, fee_counts, tip_buckets)
+    values (
+      v_account.id, p_date_key, v_hour_key,
+      coalesce((v_bucket->>'deliveries')::int, 0),
+      coalesce((v_bucket->>'tipCount')::int, 0),
+      coalesce((v_bucket->>'tipValue')::numeric, 0),
+      coalesce((v_bucket->>'orderTotal')::numeric, 0),
+      coalesce(v_bucket->'feeCounts', '{}'::jsonb),
+      coalesce(v_bucket->'tipBuckets', '{}'::jsonb)
+    )
+    on conflict (account_id, date_key, hour_key) do update set
+      deliveries = public.daily_stats.deliveries + excluded.deliveries,
+      tip_count = public.daily_stats.tip_count + excluded.tip_count,
+      tip_value = public.daily_stats.tip_value + excluded.tip_value,
+      order_total = public.daily_stats.order_total + excluded.order_total,
+      fee_counts = public.dd_jsonb_sum(public.daily_stats.fee_counts, excluded.fee_counts),
+      tip_buckets = public.dd_jsonb_sum(public.daily_stats.tip_buckets, excluded.tip_buckets);
+  end loop;
+
+  if p_cc_gratuity is not null then
+    insert into public.time_card (account_id, date_key, shifts, cc_gratuity)
+    values (v_account.id, p_date_key, '[]'::jsonb, p_cc_gratuity)
+    on conflict (account_id, date_key) do update set cc_gratuity = excluded.cc_gratuity;
+  end if;
+
+  delete from public.delivery_entries where account_id = v_account.id;
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- ============================================================
 -- PERMISSIONS -- let the app (using the public "publishable" key)
 -- actually call these functions. Direct table access stays locked.
 -- ============================================================
@@ -585,6 +900,14 @@ grant execute on function public.dd_delete_pin(text, uuid) to anon, authenticate
 grant execute on function public.dd_create_code(text, text, text) to anon, authenticated;
 grant execute on function public.dd_update_code(text, uuid, text, text) to anon, authenticated;
 grant execute on function public.dd_delete_code(text, uuid) to anon, authenticated;
+grant execute on function public.dd_get_entries(text) to anon, authenticated;
+grant execute on function public.dd_get_time_card(text) to anon, authenticated;
+grant execute on function public.dd_get_stats_history(text) to anon, authenticated;
+grant execute on function public.dd_create_entry(text, text, text, text, text, text, boolean, boolean, text, text) to anon, authenticated;
+grant execute on function public.dd_update_entry(text, uuid, text, text, text, text, text, boolean, boolean, text, text) to anon, authenticated;
+grant execute on function public.dd_delete_entry(text, uuid) to anon, authenticated;
+grant execute on function public.dd_set_shifts(text, text, jsonb) to anon, authenticated;
+grant execute on function public.dd_end_night(text, text, jsonb, text) to anon, authenticated;
 
 -- A Row Level Security policy only FILTERS which rows are visible -- it
 -- doesn't grant the read itself. These four lines grant the actual

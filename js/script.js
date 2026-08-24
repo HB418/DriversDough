@@ -3,6 +3,21 @@
 // lives in js/calculations.js; every prompt/alert goes through the reusable
 // pizza-box modal in js/dd-box-modal.js.
 (function () {
+  // Deliveries, time card, and stats history all live on the server now,
+  // tied to the logged-in driver's account — same shared client and
+  // token/error helpers maps.js/codes.js already use.
+  const sb = window.DD.supabaseClient;
+  function getDriverToken() {
+    return window.DD.auth && window.DD.auth.getToken();
+  }
+  function showServerError(error) {
+    window.DD.modal?.show({
+      top: "COULDN'T DO THAT",
+      bottom: (error || "Something went wrong. Try again.").toUpperCase(),
+      okText: "OK",
+    });
+  }
+
   const addBtn = document.getElementById("addEntryBtn");
   const cancelBtn = document.getElementById("cancel-btn");
   const submitBtn = document.getElementById("submit-btn");
@@ -31,9 +46,6 @@
   const menuTimeCard = document.getElementById("menuTimeCard");
   const menuStats = document.getElementById("menuStats");
   const menuHideImage = document.getElementById("menuHideImage");
-  const menuBackup = document.getElementById("menuBackup");
-  const menuRestore = document.getElementById("menuRestore");
-  const restoreFileInput = document.getElementById("restoreFileInput");
 
   const punchBtn = document.getElementById("punchBtn");
   const punchLabel = document.getElementById("punchLabel");
@@ -317,94 +329,10 @@
   // Maps is now real — see js/maps.js, which wires up #menuMaps on its own.
   // Codes is now real too — see js/codes.js, which wires up #menuCodes.
 
-  // === Backup / Restore ===
-  // Everything this app stores lives in localStorage on this one device —
-  // swap phones, clear site data, or run into trouble, and it's gone.
-  // Backup Data saves it all to one file the user keeps themselves;
-  // Restore Data loads that file back in (here or on a different device).
-  const BACKUP_KEYS = [
-    "driversDoughEntries",
-    "driversDoughTimeCard",
-    "driversDoughStatsHistory",
-    "driversDoughPaneWidth",
-    "driversDoughDarkMode",
-    "driversDoughHideImage",
-    "driversDoughMaps",
-    "driversDoughForum",
-    "driversDoughAuth",
-  ];
-
-  function backupData() {
-    closeHamburgerMenu();
-    const snapshot = { app: "driversDough", version: 1, exportedAt: new Date().toISOString(), data: {} };
-    BACKUP_KEYS.forEach((k) => {
-      const v = localStorage.getItem(k);
-      if (v !== null) snapshot.data[k] = v;
-    });
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `drivers-dough-backup-${toDateKey(new Date())}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-  menuBackup?.addEventListener("click", backupData);
-
-  function restoreData() {
-    closeHamburgerMenu();
-    restoreFileInput?.click();
-  }
-  menuRestore?.addEventListener("click", restoreData);
-
-  restoreFileInput?.addEventListener("change", () => {
-    const file = restoreFileInput.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      restoreFileInput.value = ""; // lets the same file be picked again later
-      let data = null;
-      try {
-        const parsed = JSON.parse(String(reader.result));
-        if (parsed?.data && typeof parsed.data === "object") data = parsed.data;
-      } catch (err) {
-        data = null;
-      }
-      if (!data) {
-        window.DD.modal?.show({
-          top: "RESTORE FAILED",
-          bottom: "THAT FILE DOESN'T LOOK LIKE A BACKUP",
-          okText: "OK",
-        });
-        return;
-      }
-      window.DD.modal?.show({
-        top: "RESTORE DATA",
-        bottom: "THIS REPLACES EVERYTHING ON THIS DEVICE",
-        okText: "Restore",
-        cancelText: "Cancel",
-        danger: true,
-        highlightBottom: true,
-        onOk: () => {
-          BACKUP_KEYS.forEach((k) => {
-            try {
-              if (data[k] !== undefined) localStorage.setItem(k, data[k]);
-            } catch (err) {}
-          });
-          window.location.reload();
-        },
-      });
-    };
-    reader.readAsText(file);
-  });
-
   // === Time Card ===
   // One punch-in/punch-out pair per calendar day, keyed by local date
   // ("YYYY-MM-DD") so it can't drift with timezone math. End Night (below)
   // stamps that day's CC gratuity onto the same record once a shift wraps.
-  const TIMECARD_KEY = "driversDoughTimeCard";
 
   function pad2(n) {
     return String(n).padStart(2, "0");
@@ -486,43 +414,39 @@
     return `${parseFloat(rounded.toFixed(2))}h`;
   }
 
-  function loadTimeCard() {
-    try {
-      const raw = localStorage.getItem(TIMECARD_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      if (!parsed || typeof parsed !== "object") return {};
-      // Migrate the old one-in/one-out-per-day shape (from before a single
-      // day could hold more than one punch-in/punch-out pair) into a
-      // shifts array, so a punch recorded before this update isn't lost or
-      // corrupted by the format change.
-      Object.keys(parsed).forEach((key) => {
-        const rec = parsed[key];
-        if (!rec || typeof rec !== "object") return;
-        if (!Array.isArray(rec.shifts)) {
-          const shifts = [];
-          if (rec.in || rec.out) shifts.push({ in: rec.in || null, out: rec.out || null });
-          rec.shifts = shifts;
-          delete rec.in;
-          delete rec.out;
-        }
-      });
-      return parsed;
-    } catch (err) {
-      return {};
-    }
-  }
-  function saveTimeCard() {
-    try {
-      localStorage.setItem(TIMECARD_KEY, JSON.stringify(timeCard));
-    } catch (err) {}
-  }
-
   // { "2026-08-20": { shifts: [{in:"14:32", out:"18:00"}, {in:"19:00",
   //   out:"22:10"}], ccGratuity: "45.00" }, ... } — a plain array so a
   // second punch-in the same day (a split shift, forgetting to punch out
   // and back in, whatever) starts a NEW shift instead of overwriting the
-  // first one's times.
-  let timeCard = loadTimeCard();
+  // first one's times. Lives on the server now, tied to the account —
+  // this stays empty until refreshTimeCard() (below) fills it in after
+  // login, same "in-memory cache refreshed from Supabase" pattern as
+  // maps.js/codes.js.
+  let timeCard = {};
+
+  async function refreshTimeCard() {
+    try {
+      const { data, error } = await sb.rpc("dd_get_time_card", { p_token: getDriverToken() });
+      if (error || !data || !data.ok) return false;
+      timeCard = data.timeCard || {};
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  // Punching in/out only ever touches TODAY's record (confirmPunch below
+  // is the only caller), so this sends just that one day's shifts array
+  // instead of the whole time card.
+  async function pushShifts(dateKey, shifts) {
+    const { data, error } = await sb.rpc("dd_set_shifts", {
+      p_token: getDriverToken(),
+      p_date_key: dateKey,
+      p_shifts: shifts,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return data;
+  }
 
   // The header button's only state: today has an open shift (punched in,
   // not yet out) — i.e. the LAST shift in today's list has an in but no out.
@@ -552,24 +476,33 @@
     punchOverlay?.classList.remove("is-open");
     punchOverlay?.setAttribute("aria-hidden", "true");
   }
-  function confirmPunch() {
+  async function confirmPunch() {
     const punchedIn = isPunchedIn();
     const time = punchTimeInput?.value || nowHHMM();
     const key = toDateKey(new Date());
-    if (!timeCard[key]) timeCard[key] = { shifts: [], ccGratuity: null };
-    if (!Array.isArray(timeCard[key].shifts)) timeCard[key].shifts = [];
+    const existingShifts = Array.isArray(timeCard[key]?.shifts) ? timeCard[key].shifts.map((s) => ({ ...s })) : [];
     if (punchedIn) {
       // Punching out closes the currently-open shift (the last one).
-      const last = timeCard[key].shifts[timeCard[key].shifts.length - 1];
+      const last = existingShifts[existingShifts.length - 1];
       if (last) last.out = time;
-      else timeCard[key].shifts.push({ in: null, out: time });
+      else existingShifts.push({ in: null, out: time });
     } else {
       // Punching in always starts a NEW shift rather than touching any
       // earlier one — this is what stops a second punch-in the same day
       // from overwriting the first shift's times.
-      timeCard[key].shifts.push({ in: time, out: null });
+      existingShifts.push({ in: time, out: null });
     }
-    saveTimeCard();
+
+    if (punchConfirmBtn) punchConfirmBtn.disabled = true;
+    const result = await pushShifts(key, existingShifts);
+    if (punchConfirmBtn) punchConfirmBtn.disabled = false;
+    if (!result || !result.ok) {
+      showServerError(result && result.error);
+      return;
+    }
+    if (!timeCard[key]) timeCard[key] = { shifts: [], ccGratuity: null };
+    timeCard[key].shifts = existingShifts;
+
     refreshPunchButton();
     closePunchPopup();
     if (timecardOverlay?.classList.contains("is-open")) renderTimeCard();
@@ -797,7 +730,6 @@
   // Month/Year stats and "this day last year" can be computed at any time.
   // Entries themselves are wiped by End Night same as always; this is what
   // survives that wipe.
-  const STATS_KEY = "driversDoughStatsHistory";
   const FEE_KEYS = window.DD.calc.FEE_TIERS;
 
   // Tip-amount distribution buckets — half-open ranges [lower, upper), so
@@ -843,39 +775,38 @@
     TIP_BUCKET_DEFS.forEach((b) => (target.tipBuckets[b.key] += bucket.tipBuckets?.[b.key] || 0));
   }
 
-  function loadStatsHistory() {
-    try {
-      const raw = localStorage.getItem(STATS_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      return parsed && typeof parsed === "object" ? parsed : {};
-    } catch (err) {
-      return {};
-    }
-  }
-  function saveStatsHistory() {
-    try {
-      localStorage.setItem(STATS_KEY, JSON.stringify(statsHistory));
-    } catch (err) {}
-  }
-
   // { "2026-08-21": { "17": {deliveries, tipCount, tipValue, orderTotal,
   //   feeCounts:{...}, tipBuckets:{...}}, "18": {...}, ... }, ... } — sparse,
-  // only hours that actually had a delivery exist.
-  let statsHistory = loadStatsHistory();
+  // only hours that actually had a delivery exist. This is the driver's
+  // permanent archive, kept on the server now — stays empty until
+  // refreshStatsHistory() (below) fills it in after login, same pattern as
+  // timeCard/entries.
+  let statsHistory = {};
 
-  // Rolls one night's entries into the permanent archive — called from
-  // clearAllEntries() right before it wipes them, so nothing is lost, just
-  // condensed from individual deliveries down to per-hour counts/totals.
-  function archiveEntriesToStats(entriesToArchive) {
-    if (!entriesToArchive.length) return;
-    const key = toDateKey(new Date());
-    if (!statsHistory[key]) statsHistory[key] = {};
-    const day = statsHistory[key];
+  async function refreshStatsHistory() {
+    try {
+      const { data, error } = await sb.rpc("dd_get_stats_history", { p_token: getDriverToken() });
+      if (error || !data || !data.ok) return false;
+      statsHistory = data.statsHistory || {};
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  // Condenses one night's entries down to per-hour counts/totals — called
+  // from clearAllEntries() right before End Night wipes them, so nothing
+  // is lost. Returns a fresh { hourKey: bucket } object of just tonight's
+  // deltas; the server (dd_end_night) folds those onto whatever's already
+  // archived for each hour, rather than this function reading/mutating
+  // statsHistory directly.
+  function computeEntriesStatsDeltas(entriesToArchive) {
+    const deltas = {};
     entriesToArchive.forEach((entry) => {
       const hh = (entry.time || nowHHMM()).split(":")[0];
       const hourKey = String(parseInt(hh, 10));
-      if (!day[hourKey]) day[hourKey] = emptyStatsBucket();
-      const bucket = day[hourKey];
+      if (!deltas[hourKey]) deltas[hourKey] = emptyStatsBucket();
+      const bucket = deltas[hourKey];
       const tip = parseFloat(entry.tip) || 0;
       // Order Total here means what the customer paid for the order
       // itself -- a phone/online CC slip's printed total often already
@@ -894,7 +825,7 @@
         bucket.feeCounts[entry.fee] += 1;
       }
     });
-    saveStatsHistory();
+    return deltas;
   }
 
   // Lunch/dinner rush windows, in hour-of-day (24h, local time). Everything
@@ -1565,32 +1496,89 @@
     if (e.key === "Escape" && statsOverlay?.classList.contains("is-open")) closeStats();
   });
 
-  // Deliveries persist across reloads/closes so a shift survives the tab
-  // being closed by accident. Only cleared deliberately via "End Night".
-  const STORAGE_KEY = "driversDoughEntries";
+  // Current (unarchived) deliveries for this shift — lives on the server
+  // now, tied to the account, so it survives a reload/closed tab AND a
+  // different device the same way everything else here does. Stays empty
+  // until refreshEntries() (below) fills it in after login.
+  let entries = [];
 
-  function loadEntries() {
+  function mapEntryRow(row) {
+    return {
+      id: row.id,
+      street: row.street || "",
+      orderType: row.orderType || "",
+      total: row.total || "",
+      tip: row.tip || "",
+      fee: row.fee || "",
+      cashTip: !!row.cashTip,
+      partialCashTip: !!row.partialCashTip,
+      partialCashAmount: row.partialCashAmount || "",
+      time: row.time || "",
+    };
+  }
+
+  async function refreshEntries() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed : [];
+      const { data, error } = await sb.rpc("dd_get_entries", { p_token: getDriverToken() });
+      if (error || !data || !data.ok) return false;
+      entries = (data.entries || []).map(mapEntryRow);
+      return true;
     } catch (err) {
-      return [];
+      return false;
     }
   }
 
-  function saveEntries() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-    } catch (err) {
-      // localStorage unavailable (private browsing, quota, etc.) — the
-      // shift still works, it just won't survive a reload.
-    }
+  async function createEntryOnServer(e) {
+    const { data, error } = await sb.rpc("dd_create_entry", {
+      p_token: getDriverToken(),
+      p_street: e.street,
+      p_order_type: e.orderType,
+      p_total: e.total,
+      p_tip: e.tip,
+      p_fee: e.fee,
+      p_cash_tip: e.cashTip,
+      p_partial_cash_tip: e.partialCashTip,
+      p_partial_cash_amount: e.partialCashAmount,
+      p_time: e.time,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return data;
   }
 
-  // In-memory record of every delivery entered this shift, seeded from
-  // localStorage so a reload/close doesn't lose the shift.
-  let entries = loadEntries();
+  async function updateEntryOnServer(id, e) {
+    const { data, error } = await sb.rpc("dd_update_entry", {
+      p_token: getDriverToken(),
+      p_entry_id: id,
+      p_street: e.street,
+      p_order_type: e.orderType,
+      p_total: e.total,
+      p_tip: e.tip,
+      p_fee: e.fee,
+      p_cash_tip: e.cashTip,
+      p_partial_cash_tip: e.partialCashTip,
+      p_partial_cash_amount: e.partialCashAmount,
+      p_time: e.time,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return data;
+  }
+
+  async function deleteEntryOnServer(id) {
+    const { data, error } = await sb.rpc("dd_delete_entry", { p_token: getDriverToken(), p_entry_id: id });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return data;
+  }
+
+  async function submitEndNight(dateKey, deltas, ccGratuity) {
+    const { data, error } = await sb.rpc("dd_end_night", {
+      p_token: getDriverToken(),
+      p_date_key: dateKey,
+      p_deltas: deltas,
+      p_cc_gratuity: ccGratuity,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return data;
+  }
   // Index into `entries` currently loaded in the form for editing, or null when adding new.
   let editIndex = null;
   // The confirmed cash portion of the tip for the entry currently in the
@@ -1909,7 +1897,7 @@
     syncCheckboxesForOrderType(true);
   }
 
-  function onSubmit(e) {
+  async function onSubmit(e) {
     e.preventDefault();
 
     const orderType = orderTypeSel?.value || "";
@@ -1973,16 +1961,19 @@
       time: (editIndex !== null && entries[editIndex]?.time) || nowHHMM(),
     };
     const wasEdit = editIndex !== null && !!entries[editIndex];
+    const editingId = wasEdit ? entries[editIndex].id : null;
 
-    if (editIndex !== null && entries[editIndex]) {
-      entries[editIndex] = entryData;
-    } else {
-      entries.push(entryData);
+    if (submitBtn) submitBtn.disabled = true;
+    const result = editingId ? await updateEntryOnServer(editingId, entryData) : await createEntryOnServer(entryData);
+    if (submitBtn) submitBtn.disabled = false;
+    if (!result || !result.ok) {
+      showServerError(result && result.error);
+      return;
     }
 
+    await refreshEntries();
     renderTable();
     updateCalculations();
-    saveEntries();
     showOrderConfirmation(entryData, wasEdit);
     form?.reset();
     closeForm();
@@ -2147,25 +2138,28 @@
     openForm();
   }
 
-  function clearAllEntries() {
-    // Stamp today's CC gratuity onto the time card before the numbers it's
-    // computed from disappear — this is the only moment that total exists.
+  async function clearAllEntries() {
+    // The CC gratuity total and the stats deltas both need computing
+    // before the entries they're computed from disappear — this is the
+    // only moment those numbers exist. dd_end_night folds both onto the
+    // server (stamping today's time card, adding onto the stats archive)
+    // and clears every current entry, all in one call.
     const totals = window.DD.calc.computeTotals(entries);
     const key = toDateKey(new Date());
-    if (!timeCard[key]) timeCard[key] = { shifts: [], ccGratuity: null };
-    timeCard[key].ccGratuity = totals.ccGratuity.toFixed(2);
-    saveTimeCard();
-    if (timecardOverlay?.classList.contains("is-open")) renderTimeCard();
+    const ccGratuity = totals.ccGratuity.toFixed(2);
+    const deltas = computeEntriesStatsDeltas(entries);
 
-    // Fold tonight's deliveries into the permanent stats archive before
-    // they're gone for good.
-    archiveEntriesToStats(entries);
+    const result = await submitEndNight(key, deltas, ccGratuity);
+    if (!result || !result.ok) {
+      showServerError(result && result.error);
+      return;
+    }
 
-    entries = [];
     editIndex = null;
+    await Promise.all([refreshEntries(), refreshTimeCard(), refreshStatsHistory()]);
+    if (timecardOverlay?.classList.contains("is-open")) renderTimeCard();
     renderTable();
     updateCalculations();
-    saveEntries();
   }
 
   // Clears the whole shift, after confirming TWICE — the deliveries table
@@ -2223,16 +2217,34 @@
           danger: true,
           highlightTop: true,
           highlightBottom: true,
-          onOk: () => {
-            entries.splice(idx, 1);
+          onOk: async () => {
+            const id = entries[idx]?.id;
+            const result = id ? await deleteEntryOnServer(id) : { ok: true };
+            if (!result || !result.ok) {
+              showServerError(result && result.error);
+              return;
+            }
+            await refreshEntries();
             renderTable();
             updateCalculations();
-            saveEntries();
           },
         });
       },
     });
   }
+
+  // Pulls this driver's entries/time card/stats history down from the
+  // server in one go — called once right after login/signup (see
+  // auth.js's enterApp()) since nothing here can load before there's a
+  // session to load it for.
+  async function refreshAll() {
+    await Promise.all([refreshEntries(), refreshTimeCard(), refreshStatsHistory()]);
+    renderTable();
+    updateCalculations();
+    refreshPunchButton();
+    if (timecardOverlay?.classList.contains("is-open")) renderTimeCard();
+  }
+  window.DD.driverData = { refreshAll };
 
   // Init
   addBtn?.addEventListener("click", startAdd);

@@ -206,6 +206,11 @@
   function enterApp() {
     gate?.classList.add("hide");
     refreshMenuUserLabel();
+    // Pull this driver's own deliveries/time card/stats down from the
+    // server now that there's a session to load them for (see
+    // script.js's refreshAll()). Fire-and-forget: script.js's own render
+    // functions run once this resolves, nothing here needs to wait on it.
+    window.DD.driverData?.refreshAll?.();
   }
 
   // On load: the gate is visible by default (see css/auth.css) so there's
