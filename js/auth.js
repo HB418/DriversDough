@@ -67,7 +67,7 @@
     } catch (err) {}
   }
 
-  let cachedSession = null; // { id, username, name, isAdmin } | null
+  let cachedSession = null; // { id, username, name, isAdmin, trackStats } | null
 
   function getSession() {
     return cachedSession;
@@ -85,7 +85,13 @@
   }
 
   function applySession(token, account) {
-    cachedSession = { id: account.id, username: account.username, name: account.name, isAdmin: !!account.isAdmin };
+    cachedSession = {
+      id: account.id,
+      username: account.username,
+      name: account.name,
+      isAdmin: !!account.isAdmin,
+      trackStats: account.trackStats !== false,
+    };
     writeStoredToken(token);
   }
 
@@ -102,7 +108,13 @@
         clearStoredToken();
         return null;
       }
-      cachedSession = { id: data.id, username: data.username, name: data.name, isAdmin: !!data.isAdmin };
+      cachedSession = {
+        id: data.id,
+        username: data.username,
+        name: data.name,
+        isAdmin: !!data.isAdmin,
+        trackStats: data.trackStats !== false,
+      };
       return cachedSession;
     } catch (err) {
       return null;
@@ -170,7 +182,43 @@
     }
   }
 
-  window.DD.auth = { getSession, isLoggedIn, getToken, signUp, logIn, logOut };
+  // Both used by the new Account page (account.js). Neither touches
+  // cachedSession's other fields -- changePassword doesn't need to (the
+  // token stays valid), and setTrackStats only updates the one field once
+  // the server confirms it saved.
+  async function changePassword({ currentPassword, newPassword, confirmPassword }) {
+    currentPassword = currentPassword || "";
+    newPassword = newPassword || "";
+    confirmPassword = confirmPassword || "";
+    if (!currentPassword) return { ok: false, error: "Enter your current password." };
+    if (newPassword.length < 6) return { ok: false, error: "New password must be at least 6 characters." };
+    if (newPassword !== confirmPassword) return { ok: false, error: "New passwords don't match." };
+
+    try {
+      const { data, error } = await sb.rpc("dd_change_password", {
+        p_token: getToken(),
+        p_current_password: currentPassword,
+        p_new_password: newPassword,
+      });
+      if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+      return data;
+    } catch (err) {
+      return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    }
+  }
+
+  async function setTrackStats(trackStats) {
+    try {
+      const { data, error } = await sb.rpc("dd_set_track_stats", { p_token: getToken(), p_track_stats: !!trackStats });
+      if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+      if (data && data.ok && cachedSession) cachedSession.trackStats = !!trackStats;
+      return data;
+    } catch (err) {
+      return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    }
+  }
+
+  window.DD.auth = { getSession, isLoggedIn, getToken, signUp, logIn, logOut, changePassword, setTrackStats };
 
   // --- UI --------------------------------------------------------------
   const gate = document.getElementById("dd-auth-gate");

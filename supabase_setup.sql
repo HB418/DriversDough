@@ -34,11 +34,16 @@ create table if not exists public.accounts (
   name text not null,
   role text not null default 'driver' check (role in ('driver', 'admin')),
   password_hash text not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  track_stats boolean not null default true
 );
 alter table public.accounts enable row level security;
 -- No policies on purpose: nobody can read or write this table directly,
 -- not even a logged-in user. Everything goes through the functions below.
+-- track_stats: an account-level opt-out of the Stats archive. Defaults on
+-- (true) so nothing changes for anyone unless they turn it off themselves
+-- from the Account page. See dd_set_track_stats below.
+alter table public.accounts add column if not exists track_stats boolean not null default true;
 
 create table if not exists public.sessions (
   token text primary key,
@@ -255,7 +260,8 @@ begin
     'ok', true,
     'token', v_token,
     'account', jsonb_build_object(
-      'id', v_account_id, 'username', v_username, 'name', v_name, 'isAdmin', v_role = 'admin'
+      'id', v_account_id, 'username', v_username, 'name', v_name, 'isAdmin', v_role = 'admin',
+      'trackStats', true
     )
   );
 end;
@@ -289,7 +295,7 @@ begin
     'token', v_token,
     'account', jsonb_build_object(
       'id', v_account.id, 'username', v_account.username, 'name', v_account.name,
-      'isAdmin', v_account.role = 'admin'
+      'isAdmin', v_account.role = 'admin', 'trackStats', v_account.track_stats
     )
   );
 end;
@@ -312,8 +318,52 @@ begin
   end if;
   return jsonb_build_object(
     'id', v_account.id, 'username', v_account.username, 'name', v_account.name,
-    'isAdmin', v_account.role = 'admin'
+    'isAdmin', v_account.role = 'admin', 'trackStats', v_account.track_stats
   );
+end;
+$$;
+
+create or replace function public.dd_change_password(
+  p_token text, p_current_password text, p_new_password text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null then
+    return jsonb_build_object('ok', false, 'error', 'Not logged in.');
+  end if;
+  if v_account.password_hash <> crypt(p_current_password, v_account.password_hash) then
+    return jsonb_build_object('ok', false, 'error', 'Current password is incorrect.');
+  end if;
+  if length(p_new_password) < 6 then
+    return jsonb_build_object('ok', false, 'error', 'New password must be at least 6 characters.');
+  end if;
+
+  update public.accounts set password_hash = crypt(p_new_password, gen_salt('bf')) where id = v_account.id;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.dd_set_track_stats(p_token text, p_track_stats boolean) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null then
+    return jsonb_build_object('ok', false, 'error', 'Not logged in.');
+  end if;
+
+  update public.accounts set track_stats = p_track_stats where id = v_account.id;
+  return jsonb_build_object('ok', true);
 end;
 $$;
 
@@ -888,6 +938,8 @@ $$;
 grant execute on function public.dd_sign_up(text, text, text, text) to anon, authenticated;
 grant execute on function public.dd_log_in(text, text) to anon, authenticated;
 grant execute on function public.dd_get_session(text) to anon, authenticated;
+grant execute on function public.dd_change_password(text, text, text) to anon, authenticated;
+grant execute on function public.dd_set_track_stats(text, boolean) to anon, authenticated;
 grant execute on function public.dd_log_out(text) to anon, authenticated;
 grant execute on function public.dd_create_thread(text, text, text, text, text, text, text, text) to anon, authenticated;
 grant execute on function public.dd_add_reply(text, uuid, text) to anon, authenticated;

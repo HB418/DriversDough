@@ -26,6 +26,7 @@
 <link href="css/maps.css?v=4" rel="stylesheet"/>
 <link href="css/forum.css?v=1" rel="stylesheet"/>
 <link href="css/codes.css?v=1" rel="stylesheet"/>
+<link href="css/account.css?v=1" rel="stylesheet"/>
 <link href="css/auth.css?v=1" rel="stylesheet"/>
 <script>
   // Applied before first paint so returning in dark mode doesn't flash light.
@@ -216,6 +217,7 @@
 <button class="menu-item" id="menuMaps" type="button">Maps</button>
 <button class="menu-item" id="menuForum" type="button">Forum</button>
 <button class="menu-item" id="menuCodes" type="button">Codes</button>
+<button class="menu-item" id="menuAccount" type="button">Account</button>
 <button class="menu-item dd-auth-logout" id="menuLogout" type="button">Log Out</button>
 </div>
 <div class="footer-punch-slot">
@@ -325,6 +327,13 @@
 <button class="btn-secondary" id="dd-codes-done" type="button">Done</button>
 </div>
 </div>
+<div class="dd-confirm-overlay" id="dd-account-overlay" aria-hidden="true">
+<div class="dd-confirm-card card" role="dialog" aria-modal="true" aria-labelledby="dd-account-title">
+<h4 class="text-center" id="dd-account-title">Account</h4>
+<div id="dd-account-body"></div>
+<button class="btn-secondary" id="dd-account-done" type="button">Done</button>
+</div>
+</div>
 <div class="dd-confirm-overlay" id="dd-forum-overlay" aria-hidden="true">
 <div class="dd-confirm-card card dd-forum-card" role="dialog" aria-modal="true" aria-labelledby="dd-forum-title">
 <div class="dd-forum-topbar">
@@ -374,10 +383,11 @@
 <script src="js/calculations.js?v=3"></script>
 <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="js/dd-box-modal.js?v=2"></script>
-<script src="js/auth.js?v=5"></script>
-<script src="js/script.js?v=26"></script>
+<script src="js/auth.js?v=6"></script>
+<script src="js/script.js?v=27"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="js/maps.js?v=9"></script>
 <script src="js/forum.js?v=3"></script>
-<script src="js/codes.js?v=1"></script></body>
+<script src="js/codes.js?v=1"></script>
+<script src="js/account.js?v=1"></script></body>
 </html>

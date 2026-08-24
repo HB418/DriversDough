@@ -1249,6 +1249,22 @@
   // than trying to patch individual pieces.
   function renderStats() {
     if (!statsBody) return;
+
+    // Stats tracking opted out (Account menu) -- there's nothing archived
+    // to show, so point the driver at the checkbox instead of rendering
+    // empty charts.
+    if (window.DD.auth?.getSession()?.trackStats === false) {
+      document.querySelectorAll(".dd-stats-tab").forEach((btn) => btn.classList.remove("is-active"));
+      if (statsPeriodEl) statsPeriodEl.textContent = "";
+      statsBody.innerHTML = "";
+      const msg = document.createElement("p");
+      msg.className = "text-center dd-account-note";
+      msg.style.padding = "1rem 0.5rem";
+      msg.textContent = 'Start tracking stats by unchecking "Do not track stats" in the Account menu.';
+      statsBody.appendChild(msg);
+      return;
+    }
+
     if (statsPeriodEl) statsPeriodEl.textContent = formatStatsPeriodLabel();
     document.querySelectorAll(".dd-stats-tab").forEach((btn) => {
       btn.classList.toggle("is-active", btn.dataset.tab === currentStatsTab);
@@ -1903,16 +1919,20 @@
     const orderType = orderTypeSel?.value || "";
     const totalRaw = totalInput?.value?.trim() || "";
 
-    // Order Total is required for every order type now, not just cash —
-    // stats tracking needs every order's total to add up "money taken in"
-    // correctly, and a cash order additionally needs a real (nonzero) total
-    // since house money is reconciled against it.
+    // Order Total is required for every order type when stats are being
+    // tracked -- stats tracking needs every order's total to add up "money
+    // taken in" correctly. A cash order always needs a real total either
+    // way, since house money is reconciled against it. When someone has
+    // opted out of stats tracking (Account menu), Order Total is optional
+    // on non-cash orders.
+    const trackingStats = window.DD.auth?.getSession()?.trackStats !== false;
+    const totalRequired = orderType === "cash" || trackingStats;
     const requiredFields = [
       { label: "Street Address", el: streetInput, ok: !!streetInput?.value?.trim() },
       { label: "Delivery Fee", el: feeSelect, ok: !!feeSelect?.value },
       { label: "Order Type", el: orderTypeSel, ok: !!orderType },
       { label: "Tip (Gratuity)", el: tipInput, ok: !!tipInput?.value?.trim() },
-      { label: "Order Total", el: totalInput, ok: !!totalRaw },
+      { label: "Order Total", el: totalInput, ok: !totalRequired || !!totalRaw },
     ];
     const missing = requiredFields.filter((f) => !f.ok);
     if (missing.length) {
@@ -1928,8 +1948,9 @@
 
     // Order Total can never be $0.00, on any order type — a free delivery
     // isn't a real order, and cash orders specifically need a real total
-    // since house money is reconciled against it.
-    if (!(Number(totalRaw) > 0)) {
+    // since house money is reconciled against it. Skipped entirely when
+    // Order Total isn't required and was left blank.
+    if ((totalRequired || totalRaw) && !(Number(totalRaw) > 0)) {
       window.DD.modal?.show({
         top: "ORDER TOTAL NEEDED",
         bottom: "ORDER TOTAL CAN'T BE $0.00",
@@ -2147,7 +2168,12 @@
     const totals = window.DD.calc.computeTotals(entries);
     const key = toDateKey(new Date());
     const ccGratuity = totals.ccGratuity.toFixed(2);
-    const deltas = computeEntriesStatsDeltas(entries);
+    // Skip building stats deltas entirely when this account has opted out
+    // of stats tracking (Account menu) -- an empty deltas object makes
+    // dd_end_night's archive loop a no-op, while CC gratuity stamping and
+    // clearing today's entries still happen normally either way.
+    const trackingStats = window.DD.auth?.getSession()?.trackStats !== false;
+    const deltas = trackingStats ? computeEntriesStatsDeltas(entries) : {};
 
     const result = await submitEndNight(key, deltas, ccGratuity);
     if (!result || !result.ok) {
