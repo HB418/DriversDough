@@ -53,7 +53,7 @@
   // pinsCache[mapId] is null until that map's pins have been fetched at
   // least once (lets the picker show "…" instead of a wrong "0 pins"),
   // then an array of {id, number, lat, lng, rotation} after that.
-  // pathsCache[mapId] is the same idea for Tree Line paths -- null until
+  // pathsCache[mapId] is the same idea for waypoint paths -- null until
   // fetched, then an array of {id, mapId, points} where points is an
   // ordered list of {lat,lng} (first = Start, last = End).
   let pinsCache = {};
@@ -239,23 +239,23 @@
     }
   }
 
-  // --- Tree Line path point icons -- same "scales with zoom" approach as
+  // --- Waypoint path point icons -- same "scales with zoom" approach as
   // the pin badge above, just simpler shapes: a lettered circle for
   // Start/End, a plain dot for anything in between. ---
-  const PATH_ENDPOINT_BASE_D = 22;
-  const PATH_MID_BASE_D = 12;
+  const PATH_ENDPOINT_BASE_D = 18;
+  const PATH_MID_BASE_D = 9;
 
   function makePathPointIcon(kind, scale, isPending) {
     // kind: "start" | "end" | "mid"
     scale = scale || 1;
     const pendingClass = isPending ? " is-pending" : "";
     if (kind === "mid") {
-      const d = Math.max(8, Math.round(PATH_MID_BASE_D * scale));
+      const d = Math.max(6, Math.round(PATH_MID_BASE_D * scale));
       const html = '<div class="dd-path-mid-dot' + pendingClass + '" style="width:' + d + "px;height:" + d + 'px;"></div>';
       return L.divIcon({ html: html, className: "dd-path-div-icon", iconSize: [d, d], iconAnchor: [d / 2, d / 2] });
     }
-    const d = Math.max(16, Math.round(PATH_ENDPOINT_BASE_D * scale));
-    const fontPx = Math.max(9, Math.round(11 * scale));
+    const d = Math.max(13, Math.round(PATH_ENDPOINT_BASE_D * scale));
+    const fontPx = Math.max(8, Math.round(9 * scale));
     const label = kind === "start" ? "S" : "E";
     const kindClass = kind === "end" ? " dd-path-end" : "";
     const html =
@@ -278,8 +278,7 @@
   let followMode = true; // map re-centers on the live-location dot until the user drags away
 
   let permanentPathsLayer = null;
-  let setupPlaceMode = "pin"; // "pin" | "path" -- which kind of thing a Setup Mode tap places
-  let pendingPathPoints = []; // [{lat,lng}, ...] while placing a new path or editing an existing one
+  let pendingPathPoints = []; // [{lat,lng}, ...] while placing a new waypoint chain or editing an existing one
   let pendingPathMarkers = []; // parallel Leaflet markers, one per pendingPathPoints entry
   let pendingPathLine = null; // L.polyline joining pendingPathPoints
   let editingPathId = null; // set while pendingPathPoints represents an EXISTING path being edited, not a new one
@@ -299,9 +298,6 @@
   const recenterBtn = document.getElementById("dd-map-recenter-btn");
 
   const setupBar = document.getElementById("dd-map-setup-bar");
-  const setupModeRow = document.getElementById("dd-map-setup-mode-row");
-  const setupModePinBtn = document.getElementById("dd-map-setup-mode-pin");
-  const setupModePathBtn = document.getElementById("dd-map-setup-mode-path");
   const setupInstructions = document.getElementById("dd-map-setup-instructions");
   const setupFieldsRow = document.getElementById("dd-map-setup-fields");
   const setupNumberInput = document.getElementById("dd-map-setup-number");
@@ -312,6 +308,9 @@
   const setupDeleteBtn = document.getElementById("dd-map-setup-delete");
   const setupPathUndoBtn = document.getElementById("dd-map-setup-path-undo");
   const setupExitBtn = document.getElementById("dd-map-setup-exit");
+  const addWaypointBtn = document.getElementById("dd-map-setup-add-waypoint");
+  const crosshairEl = document.getElementById("dd-map-crosshair");
+  const searchBar = document.querySelector(".dd-map-searchbar");
 
   function closeHamburgerMenuLocal() {
     const menu = document.getElementById("hamburgerMenu");
@@ -547,10 +546,7 @@
     pinMarkersByNumber = {};
     const rec = getMapRecord(currentMapId);
     const scale = scaleForZoom(mapLeaflet);
-    // Only clickable-to-edit while Setup Mode is on AND Pins is the
-    // active placement mode -- otherwise a tap meant for the Tree Line
-    // tool could land on a pin underneath and open the wrong editor.
-    const pinsInteractive = setupModeOn && setupPlaceMode === "pin";
+    const pinsInteractive = setupModeOn;
     rec.pins.forEach((pin) => {
       const marker = L.marker([pin.lat, pin.lng], {
         icon: makePinDivIcon(pin.number, pin.rotation || 0, scale, false),
@@ -569,16 +565,17 @@
       pinMarkersByNumber[String(pin.number).toLowerCase()] = marker;
     });
   }
-  // === Permanent Tree Line paths ===
-  // Same interactive-only-in-its-own-Setup-submode rule as pins above.
-  // The path currently being edited (editingPathId) is skipped here --
-  // it's rendered by renderPendingPath() instead, as draggable points.
+  // === Permanent waypoint paths ===
+  // Interactive-to-edit whenever Setup Mode is on (pins and waypoints are
+  // both always live -- there's no separate submode to gate on). The path
+  // currently being edited (editingPathId) is skipped here -- it's
+  // rendered by renderPendingPath() instead, as draggable points.
   function renderPermanentPaths() {
     if (!permanentPathsLayer) return;
     permanentPathsLayer.clearLayers();
     const rec = getMapRecord(currentMapId);
     const scale = scaleForZoom(mapLeaflet);
-    const pathsInteractive = setupModeOn && setupPlaceMode === "path";
+    const pathsInteractive = setupModeOn;
     rec.paths.forEach((path) => {
       if (editingPathId === path.id) return;
       const latlngs = path.points.map((p) => [p.lat, p.lng]);
@@ -642,7 +639,11 @@
   function readyMessage() {
     if (!currentMapId) return "";
     const rec = getMapRecord(currentMapId);
-    return "Tap the map to drop pin #" + lowestAvailableNumber(rec) + ", or tap a pin to edit it.";
+    return (
+      "Tap the map to drop pin #" +
+      lowestAvailableNumber(rec) +
+      ", or tap a pin/waypoint path to edit it. Use + Waypoint below to mark a road."
+    );
   }
   // Tears down whatever's currently being placed or edited (if anything),
   // resets the Confirm/Delete buttons back to their default "new pin"
@@ -661,11 +662,11 @@
     setupDeleteBtn?.classList.add("hide");
     if (setupConfirmBtn) {
       setupConfirmBtn.textContent = "Confirm";
-      // Tree Line's Confirm/Save uses .disabled as a persistent "fewer
-      // than 2 points" gate (see updatePathSetupUI), unlike pins which
-      // only ever disable it transiently during a save request -- reset
-      // it explicitly here so a leftover disabled state from Tree Line
-      // can't follow you back into Pins mode.
+      // Waypoints use .disabled as a persistent "fewer than 2 points" gate
+      // (see updatePathSetupUI), unlike pins which only ever disable it
+      // transiently during a save request -- reset it explicitly here so
+      // a leftover disabled state from a waypoint chain can't stick
+      // around once you're back to placing pins.
       setupConfirmBtn.disabled = false;
     }
     renderPermanentPins();
@@ -677,12 +678,10 @@
     setupBar?.classList.toggle("hide", !on);
     exitPendingEditOrPlace();
     exitPendingPath();
-    // Always reopens on the Pins tool -- Setup Mode is off by default for
-    // most sessions, so there's nothing to "remember" across a re-open.
-    setupPlaceMode = "pin";
-    setupModePinBtn?.classList.add("is-active");
-    setupModePathBtn?.classList.remove("is-active");
-    setupModeRow?.classList.toggle("hide", !on);
+    crosshairEl?.classList.toggle("hide", !on);
+    // The search bar isn't needed while placing pins/waypoints, and just
+    // eats vertical space above an already-cramped setup bar.
+    searchBar?.classList.toggle("hide", on);
     if (on && setupInstructions) setupInstructions.textContent = readyMessage();
   }
   setupToggleBtn?.addEventListener("click", () => {
@@ -692,36 +691,24 @@
   });
   setupExitBtn?.addEventListener("click", () => setSetupMode(false));
 
-  // Switches which kind of thing a Setup Mode tap places. Leaving a mode
-  // with something pending cancels it first -- switching tools mid-edit
-  // would otherwise leave a half-placed pin or path hanging around.
-  function setSetupPlaceMode(mode) {
-    if (mode === setupPlaceMode) return;
-    // Unconditionally, not just for whichever tool is being left -- so
-    // switching tools always hands off a fully clean Confirm/Cancel/
-    // Delete row, regardless of what state either tool left it in.
-    exitPendingEditOrPlace();
-    exitPendingPath();
-    setupPlaceMode = mode;
-    setupModePinBtn?.classList.toggle("is-active", mode === "pin");
-    setupModePathBtn?.classList.toggle("is-active", mode === "path");
-    renderPermanentPins();
-    renderPermanentPaths();
-    if (mode === "pin") {
-      if (setupInstructions) setupInstructions.textContent = readyMessage();
-    } else {
-      updatePathSetupUI();
-    }
-  }
-  setupModePinBtn?.addEventListener("click", () => setSetupPlaceMode("pin"));
-  setupModePathBtn?.addEventListener("click", () => setSetupPlaceMode("path"));
+  // Drops a new waypoint at the current map center -- pan the map, then
+  // press the button again for the next point. This (not a map tap) is
+  // how waypoints get placed, so a plain tap can always mean "place a
+  // pin" without the two colliding.
+  addWaypointBtn?.addEventListener("click", () => {
+    if (!setupModeOn || !currentMapId || !mapLeaflet || pendingMarker) return;
+    const center = mapLeaflet.getCenter();
+    pendingPathPoints.push({ lat: center.lat, lng: center.lng });
+    renderPendingPath();
+    updatePathSetupUI();
+  });
 
   // Pulls one existing permanent pin out for editing: draggable position,
   // adjustable direction/number, plus a Delete option -- unlike a brand
   // new drop, saving here updates that SAME pin in place and never
   // touches the auto-numbering sequence.
   function startEditingPin(pin) {
-    if (pendingMarker || !mapLeaflet) return; // already placing/editing something else
+    if (pendingMarker || pendingPathPoints.length || !mapLeaflet) return; // already placing/editing something else
     const scale = scaleForZoom(mapLeaflet);
     editingPinId = pin.id;
     pendingRotation = pin.rotation || 0;
@@ -748,10 +735,10 @@
 
   function handleMapClick(e) {
     if (!setupModeOn || !currentMapId) return;
-    if (setupPlaceMode === "path") {
-      handlePathMapClick(e);
-      return;
-    }
+    // Don't let a stray tap discard an in-progress waypoint chain -- with
+    // waypoints placed via the button now, a tap during placement should
+    // just be a no-op rather than silently starting a new pin.
+    if (pendingPathPoints.length) return;
     const rec = getMapRecord(currentMapId);
     const scale = scaleForZoom(mapLeaflet);
     if (pendingMarker) {
@@ -850,31 +837,29 @@
   // The Confirm/Cancel/Delete row is shared between the Pins and Tree
   // Line tools -- dispatch by whichever placement mode is currently
   // active rather than duplicating the buttons.
+  // Pins and waypoints both flow through the same Confirm/Cancel/Delete
+  // row -- since there's no exclusive mode anymore, dispatch on whichever
+  // one is actually pending, not on a mode flag.
   setupConfirmBtn?.addEventListener("click", () => {
-    if (setupPlaceMode === "path") confirmPendingPath();
+    if (pendingPathPoints.length) confirmPendingPath();
     else confirmPendingPin();
   });
   setupCancelBtn?.addEventListener("click", () => {
-    if (setupPlaceMode === "path") cancelPendingPath();
+    if (pendingPathPoints.length) cancelPendingPath();
     else cancelPendingPin();
   });
   setupDeleteBtn?.addEventListener("click", () => {
-    if (setupPlaceMode === "path") deletePendingPathSelection();
+    if (editingPathId) deletePendingPathSelection();
     else deletePendingPin();
   });
 
-  // === Tree Line paths (Setup Mode) ===
-  // Tap the map to drop points in order -- first is the Start, last is
-  // the End, whatever's tapped in between are waypoints. Finish saves the
-  // whole path at once (unlike pins, which save one at a time). Tapping
-  // an existing path pulls it back into this same pending state for
-  // editing: drag any point, tap the map to add more to the end, Undo
-  // Point to remove the last one, or Delete Path.
-  function handlePathMapClick(e) {
-    pendingPathPoints.push({ lat: e.latlng.lat, lng: e.latlng.lng });
-    renderPendingPath();
-    updatePathSetupUI();
-  }
+  // === Waypoint paths (Setup Mode) ===
+  // Press + Waypoint to drop points in order at the map's center -- first
+  // is the Start, last is the End, anything in between is a waypoint.
+  // Confirm saves the whole path at once (unlike pins, which save one at
+  // a time). Tapping an existing path pulls it back into this same
+  // pending state for editing: drag any point, press + Waypoint to add
+  // more to the end, Undo to remove the last one, or Delete.
   function renderPendingPath() {
     if (!mapLeaflet) return;
     pendingPathMarkers.forEach((m) => mapLeaflet.removeLayer(m));
@@ -919,23 +904,26 @@
 
     if (setupInstructions) {
       if (n === 0) {
-        setupInstructions.textContent = "Tap the map to place the Start point.";
+        setupInstructions.textContent = "Pan the map so the Start point is centered, then press + Waypoint.";
       } else if (n === 1) {
-        setupInstructions.textContent = "Tap the map to add the End point (or more points in between).";
+        setupInstructions.textContent = "Pan the map, then press + Waypoint again to add the End point.";
       } else if (isEditing) {
-        setupInstructions.textContent = "Drag any point to adjust, tap the map to add more, or Save.";
+        setupInstructions.textContent = "Drag any point to adjust, press + Waypoint to add more, or Save.";
       } else {
-        setupInstructions.textContent = "Tap to add more points, drag any point to adjust, then Finish when you've reached the end.";
+        setupInstructions.textContent = "Press + Waypoint to add more points, drag any point to adjust, then Confirm.";
       }
     }
 
     setupActionsRow?.classList.toggle("hide", n === 0 && !isEditing);
     setupPathUndoBtn?.classList.toggle("hide", n === 0 || (isEditing && n <= 2));
     setupDeleteBtn?.classList.toggle("hide", !isEditing);
-    if (setupDeleteBtn) setupDeleteBtn.textContent = "Delete Path";
     if (setupConfirmBtn) {
-      setupConfirmBtn.disabled = n < 2;
-      setupConfirmBtn.textContent = isEditing ? "Save Path" : "Finish Path";
+      // Only disable for the "started a chain but only have 1 point so
+      // far" state -- n === 0 means no chain is pending at all (Confirm
+      // is shared with the pin flow, which needs it enabled by default,
+      // not stuck disabled from a waypoint chain that's since ended).
+      setupConfirmBtn.disabled = n > 0 && n < 2;
+      setupConfirmBtn.textContent = isEditing ? "Save" : "Confirm";
     }
   }
   setupPathUndoBtn?.addEventListener("click", () => {
@@ -962,7 +950,14 @@
     setupActionsRow?.classList.add("hide");
     setupPathUndoBtn?.classList.add("hide");
     setupDeleteBtn?.classList.add("hide");
-    if (setupConfirmBtn) setupConfirmBtn.textContent = "Finish Path";
+    if (setupConfirmBtn) {
+      setupConfirmBtn.textContent = "Confirm";
+      // Belt-and-suspenders reset, same reasoning as
+      // exitPendingEditOrPlace's: Confirm is shared with the pin flow, so
+      // a stale disabled state from a waypoint chain must never survive
+      // past the chain actually ending.
+      setupConfirmBtn.disabled = false;
+    }
     renderPermanentPaths();
   }
   // Pulls one existing permanent path out for editing -- same idea as
@@ -992,11 +987,11 @@
 
     await refreshPathsForMap(mapId);
     exitPendingPath();
-    updatePathSetupUI();
+    if (setupInstructions) setupInstructions.textContent = readyMessage();
   }
   function cancelPendingPath() {
     exitPendingPath();
-    updatePathSetupUI();
+    if (setupInstructions) setupInstructions.textContent = readyMessage();
   }
   async function deletePendingPathSelection() {
     if (!editingPathId || !currentMapId) return;

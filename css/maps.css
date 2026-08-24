@@ -311,88 +311,71 @@
   100% { box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 0 14px rgba(242, 135, 5, 0); }
 }
 
-/* === Setup Mode bottom bar === */
+/* === Setup Mode bottom bar ===
+   Kept as compact as possible -- this sits below the map on a phone
+   screen, so every extra row here is map real estate lost. */
 .dd-map-setup-bar {
   flex-shrink: 0;
   background: #f7f3ea;
   border-top: 3px solid var(--dd-amber);
-  padding: 0.6rem 0.9rem calc(0.6rem + env(safe-area-inset-bottom, 0px));
+  padding: 0.4rem 0.75rem calc(0.4rem + env(safe-area-inset-bottom, 0px));
 }
 :root[data-theme="dark"] .dd-map-setup-bar {
   background: #262a31;
 }
-/* Pins vs Tree Line placement toggle -- which kind of thing a tap on the
-   map drops. Hidden whenever a pin/path is actively pending, same reason
-   the picker for the map itself is hidden while a pin's mid-edit: switching
-   what you're placing mid-edit would be a confusing half-state. */
-.dd-map-setup-mode-row {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-.dd-map-setup-mode-row.hide {
-  display: none;
-}
-.dd-map-setup-mode-btn {
-  flex: 1;
-  border: 2px solid var(--dd-sky);
-  background: #fff;
-  color: var(--dd-sky);
-  font: inherit;
-  font-weight: 700;
-  font-size: 0.85rem;
-  padding: 0.35rem 0.5rem;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.dd-map-setup-mode-btn.is-active {
-  background: var(--dd-sky);
-  color: #fff;
-}
-:root[data-theme="dark"] .dd-map-setup-mode-btn {
-  background: transparent;
-  border-color: var(--dd-amber);
-  color: var(--dd-amber);
-}
-:root[data-theme="dark"] .dd-map-setup-mode-btn.is-active {
-  background: var(--dd-amber);
-  color: #1f2227;
-}
 .dd-map-setup-instructions {
-  margin: 0 0 0.4rem;
-  font-size: 0.9rem;
+  margin: 0 0 0.3rem;
+  font-size: 0.78rem;
+  line-height: 1.25;
   text-align: center;
 }
 .dd-map-setup-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 0.75rem;
-  margin-bottom: 0.5rem;
+  gap: 0.4rem 0.6rem;
+  margin-bottom: 0.35rem;
 }
 .dd-map-setup-label {
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-weight: 700;
   color: var(--dd-orange);
 }
 .dd-map-setup-number {
-  width: 5rem;
-  padding: 0.3rem 0.5rem;
+  width: 4.5rem;
+  padding: 0.25rem 0.4rem;
   border: 1px solid #ccc;
   border-radius: 6px;
-  font-size: 1rem;
+  font-size: 0.9rem;
 }
 .dd-map-setup-rotation {
   flex: 1;
-  min-width: 120px;
+  min-width: 100px;
 }
 .dd-map-setup-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.6rem;
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
 }
 .dd-map-setup-actions button {
   flex: 1 1 45%;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.85rem;
+}
+/* Pins are always tap-to-drop and Waypoints are always the + Waypoint
+   button below -- both available at all times in Setup Mode, no mode
+   switch between them. This bottom row is the one thing that's always
+   visible (as opposed to .dd-map-setup-row/.dd-map-setup-actions, which
+   only show up while something's actually pending). */
+.dd-map-setup-bottom-row {
+  display: flex;
+  gap: 0.5rem;
+}
+.dd-map-setup-bottom-row button {
+  flex: 1;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.85rem;
 }
 /* .dd-map-setup-row and .dd-map-setup-actions both set their own
    display:flex above, which ties with the generic .hide{display:none}
@@ -405,13 +388,50 @@
 .dd-map-setup-actions.hide {
   display: none;
 }
-#dd-map-setup-exit {
-  width: 100%;
-}
 :root[data-theme="dark"] .dd-map-setup-number {
   background: #1f2227;
   border-color: #3a3f47;
   color: #e8e8e8;
+}
+
+/* Search is only useful for finding an existing house pin -- not needed
+   while actively placing/editing pins and waypoints, and hiding it in
+   Setup Mode gives the map that much more height back. Same "restate the
+   hide override" reasoning as above (this file loads after style.css). */
+.dd-map-searchbar.hide {
+  display: none;
+}
+
+/* Center reticle, shown only in Setup Mode -- marks exactly where the
+   next + Waypoint press will drop a point, since waypoints come from the
+   map's current center rather than a tap (pan the map, then press the
+   button). Purely visual, never intercepts taps. */
+.dd-map-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border: 2px solid #0aa3a3;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+  pointer-events: none;
+  z-index: 550;
+}
+.dd-map-crosshair::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: #0aa3a3;
+}
+.dd-map-crosshair.hide {
+  display: none;
 }
 
 /* Leaflet's own attribution control reads fine as-is; just keep it from
@@ -420,7 +440,7 @@
   margin-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-/* === Tree Line path markers (Leaflet divIcon contents) ===
+/* === Waypoint path markers (Leaflet divIcon contents) ===
    Start/End get a small lettered badge (teal, darker teal for End so
    they're tellable apart at a glance); every point in between is a plain
    dot in the same family. The line itself is a plain Leaflet polyline
