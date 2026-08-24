@@ -105,6 +105,26 @@ create policy "map pins are viewable by everyone" on public.map_pins
 -- Reading pins is open to everyone; only dd_create_pin/dd_update_pin/
 -- dd_delete_pin (below) can write, and those check for an admin account.
 
+create table if not exists public.map_paths (
+  id uuid primary key default gen_random_uuid(),
+  map_id text not null,
+  points jsonb not null,
+  created_by uuid references public.accounts (id) on delete set null,
+  created_at timestamptz not null default now()
+);
+alter table public.map_paths enable row level security;
+drop policy if exists "map paths are viewable by everyone" on public.map_paths;
+create policy "map paths are viewable by everyone" on public.map_paths
+  for select using (true);
+-- Same pattern as map pins: everyone can read (so every driver sees which
+-- roads are marked), only dd_create_path/dd_update_path/dd_delete_path
+-- (below) can write, admin-only. A path is an ordered list of {lat,lng}
+-- points -- first is the Start, last is the End, anything between is a
+-- waypoint -- used to mark a stretch of road that's covered by tree line
+-- and doesn't read clearly in the satellite imagery. Just a line for now;
+-- meant to eventually be replaced with something that looks more like an
+-- actual road.
+
 create table if not exists public.access_codes (
   id uuid primary key default gen_random_uuid(),
   address text not null,
@@ -605,6 +625,88 @@ end;
 $$;
 
 -- ============================================================
+-- TREE LINE PATH FUNCTIONS (admin only) -- marks a stretch of road
+-- covered by tree line, as an ordered list of {lat,lng} points. Same
+-- admin-check + shape as the pin functions above.
+-- ============================================================
+
+create or replace function public.dd_create_path(
+  p_token text,
+  p_map_id text,
+  p_points jsonb
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+  v_id uuid;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null or v_account.role <> 'admin' then
+    return jsonb_build_object('ok', false, 'error', 'Admin only.');
+  end if;
+  if jsonb_typeof(p_points) <> 'array' or jsonb_array_length(p_points) < 2 then
+    return jsonb_build_object('ok', false, 'error', 'A path needs at least a start and end point.');
+  end if;
+
+  insert into public.map_paths (map_id, points, created_by)
+  values (p_map_id, p_points, v_account.id)
+  returning id into v_id;
+
+  return jsonb_build_object('ok', true, 'id', v_id);
+end;
+$$;
+
+create or replace function public.dd_update_path(
+  p_token text,
+  p_path_id uuid,
+  p_points jsonb
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null or v_account.role <> 'admin' then
+    return jsonb_build_object('ok', false, 'error', 'Admin only.');
+  end if;
+  if jsonb_typeof(p_points) <> 'array' or jsonb_array_length(p_points) < 2 then
+    return jsonb_build_object('ok', false, 'error', 'A path needs at least a start and end point.');
+  end if;
+
+  update public.map_paths set points = p_points where id = p_path_id;
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.dd_delete_path(
+  p_token text,
+  p_path_id uuid
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions, pg_temp
+as $$
+declare
+  v_account public.accounts%rowtype;
+begin
+  v_account := public.dd_account_for_token(p_token);
+  if v_account.id is null or v_account.role <> 'admin' then
+    return jsonb_build_object('ok', false, 'error', 'Admin only.');
+  end if;
+
+  delete from public.map_paths where id = p_path_id;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- ============================================================
 -- ACCESS CODE FUNCTIONS (admin only) -- a plain address + code list.
 -- ============================================================
 
@@ -949,6 +1051,9 @@ grant execute on function public.dd_delete_reply(text, uuid) to anon, authentica
 grant execute on function public.dd_create_pin(text, text, int, double precision, double precision, double precision) to anon, authenticated;
 grant execute on function public.dd_update_pin(text, uuid, int, double precision, double precision, double precision) to anon, authenticated;
 grant execute on function public.dd_delete_pin(text, uuid) to anon, authenticated;
+grant execute on function public.dd_create_path(text, text, jsonb) to anon, authenticated;
+grant execute on function public.dd_update_path(text, uuid, jsonb) to anon, authenticated;
+grant execute on function public.dd_delete_path(text, uuid) to anon, authenticated;
 grant execute on function public.dd_create_code(text, text, text) to anon, authenticated;
 grant execute on function public.dd_update_code(text, uuid, text, text) to anon, authenticated;
 grant execute on function public.dd_delete_code(text, uuid) to anon, authenticated;
@@ -969,6 +1074,7 @@ grant execute on function public.dd_end_night(text, text, jsonb, text) to anon, 
 grant select on public.forum_threads to anon, authenticated;
 grant select on public.forum_replies to anon, authenticated;
 grant select on public.map_pins to anon, authenticated;
+grant select on public.map_paths to anon, authenticated;
 grant select on public.access_codes to anon, authenticated;
 
 -- ============================================================

@@ -321,6 +321,43 @@
 :root[data-theme="dark"] .dd-map-setup-bar {
   background: #262a31;
 }
+/* Pins vs Tree Line placement toggle -- which kind of thing a tap on the
+   map drops. Hidden whenever a pin/path is actively pending, same reason
+   the picker for the map itself is hidden while a pin's mid-edit: switching
+   what you're placing mid-edit would be a confusing half-state. */
+.dd-map-setup-mode-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.dd-map-setup-mode-row.hide {
+  display: none;
+}
+.dd-map-setup-mode-btn {
+  flex: 1;
+  border: 2px solid var(--dd-sky);
+  background: #fff;
+  color: var(--dd-sky);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.dd-map-setup-mode-btn.is-active {
+  background: var(--dd-sky);
+  color: #fff;
+}
+:root[data-theme="dark"] .dd-map-setup-mode-btn {
+  background: transparent;
+  border-color: var(--dd-amber);
+  color: var(--dd-amber);
+}
+:root[data-theme="dark"] .dd-map-setup-mode-btn.is-active {
+  background: var(--dd-amber);
+  color: #1f2227;
+}
 .dd-map-setup-instructions {
   margin: 0 0 0.4rem;
   font-size: 0.9rem;
@@ -351,10 +388,11 @@
 }
 .dd-map-setup-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.6rem;
 }
 .dd-map-setup-actions button {
-  flex: 1;
+  flex: 1 1 45%;
 }
 /* .dd-map-setup-row and .dd-map-setup-actions both set their own
    display:flex above, which ties with the generic .hide{display:none}
@@ -380,4 +418,40 @@
    sitting under the iOS home-indicator safe area. */
 .leaflet-bottom {
   margin-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* === Tree Line path markers (Leaflet divIcon contents) ===
+   Start/End get a small lettered badge (teal, darker teal for End so
+   they're tellable apart at a glance); every point in between is a plain
+   dot in the same family. The line itself is a plain Leaflet polyline
+   (color/dash set in JS, not here) -- deliberately just a marked line for
+   now, not meant to look like a real road yet. */
+.dd-path-endpoint-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #0aa3a3;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-weight: 700;
+  line-height: 1;
+}
+.dd-path-endpoint-badge.dd-path-end {
+  background: #0a7a7a;
+}
+.dd-path-mid-dot {
+  border-radius: 50%;
+  background: #0aa3a3;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+/* Pending: the path (or single point) actively being placed/adjusted in
+   Setup Mode, before Finish/Save locks it in -- same "sky blue, pulsing"
+   pending language already used for pins. */
+.dd-path-endpoint-badge.is-pending,
+.dd-path-mid-dot.is-pending {
+  background: var(--dd-sky);
+  animation: dd-pin-pending-pulse 1.4s ease-in-out infinite;
 }

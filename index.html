@@ -23,7 +23,7 @@
 <link href="css/style.css?v=30" rel="stylesheet"/>
 <link href="css/dd-box-modal.css?v=3" rel="stylesheet"/>
 <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
-<link href="css/maps.css?v=4" rel="stylesheet"/>
+<link href="css/maps.css?v=5" rel="stylesheet"/>
 <link href="css/forum.css?v=1" rel="stylesheet"/>
 <link href="css/codes.css?v=1" rel="stylesheet"/>
 <link href="css/account.css?v=1" rel="stylesheet"/>
@@ -365,6 +365,10 @@
 <button class="dd-map-recenter-btn hide" id="dd-map-recenter-btn" type="button" aria-label="Recenter on my location">⌖</button>
 </div>
 <div class="dd-map-setup-bar hide" id="dd-map-setup-bar">
+<div class="dd-map-setup-mode-row" id="dd-map-setup-mode-row">
+<button class="dd-map-setup-mode-btn is-active" id="dd-map-setup-mode-pin" type="button">Pins</button>
+<button class="dd-map-setup-mode-btn" id="dd-map-setup-mode-path" type="button">Tree Line</button>
+</div>
 <p class="dd-map-setup-instructions" id="dd-map-setup-instructions">Tap the map to drop the next pin.</p>
 <div class="dd-map-setup-row hide" id="dd-map-setup-fields">
 <label class="dd-map-setup-label" for="dd-map-setup-number">House #</label>
@@ -374,6 +378,7 @@
 </div>
 <div class="dd-map-setup-actions hide" id="dd-map-setup-actions">
 <button class="btn-danger hide" id="dd-map-setup-delete" type="button">Delete</button>
+<button class="btn-secondary hide" id="dd-map-setup-path-undo" type="button">Undo Point</button>
 <button class="btn-secondary" id="dd-map-setup-cancel" type="button">Cancel</button>
 <button class="btn-primary" id="dd-map-setup-confirm" type="button">Confirm</button>
 </div>
@@ -386,7 +391,7 @@
 <script src="js/auth.js?v=6"></script>
 <script src="js/script.js?v=27"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="js/maps.js?v=9"></script>
+<script src="js/maps.js?v=10"></script>
 <script src="js/forum.js?v=3"></script>
 <script src="js/codes.js?v=1"></script>
 <script src="js/account.js?v=1"></script></body>

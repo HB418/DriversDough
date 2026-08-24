@@ -53,9 +53,14 @@
   // pinsCache[mapId] is null until that map's pins have been fetched at
   // least once (lets the picker show "…" instead of a wrong "0 pins"),
   // then an array of {id, number, lat, lng, rotation} after that.
+  // pathsCache[mapId] is the same idea for Tree Line paths -- null until
+  // fetched, then an array of {id, mapId, points} where points is an
+  // ordered list of {lat,lng} (first = Start, last = End).
   let pinsCache = {};
+  let pathsCache = {};
   MAP_DEFS.forEach((def) => {
     pinsCache[def.id] = null;
+    pathsCache[def.id] = null;
   });
 
   function mapPinRow(row) {
@@ -75,12 +80,25 @@
       return false;
     }
   }
+  function mapPathRow(row) {
+    return { id: row.id, mapId: row.map_id, points: Array.isArray(row.points) ? row.points : [] };
+  }
+  async function refreshPathsForMap(mapId) {
+    try {
+      const { data, error } = await sb.from("map_paths").select("*").eq("map_id", mapId);
+      if (error || !data) return false;
+      pathsCache[mapId] = data.map(mapPathRow);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
   // Loads pin counts for every property at once, for the picker screen.
   async function refreshAllPinCounts() {
     await Promise.all(MAP_DEFS.map((def) => refreshPinsForMap(def.id)));
   }
   function getMapRecord(id) {
-    return { pins: pinsCache[id] || [] };
+    return { pins: pinsCache[id] || [], paths: pathsCache[id] || [] };
   }
 
   async function createPin(mapId, number, lat, lng, rotation) {
@@ -111,6 +129,32 @@
     const { data: result, error } = await sb.rpc("dd_delete_pin", {
       p_token: window.DD.auth.getToken(),
       p_pin_id: pinId,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
+  }
+  async function createPath(mapId, points) {
+    const { data: result, error } = await sb.rpc("dd_create_path", {
+      p_token: window.DD.auth.getToken(),
+      p_map_id: mapId,
+      p_points: points,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
+  }
+  async function updatePath(pathId, points) {
+    const { data: result, error } = await sb.rpc("dd_update_path", {
+      p_token: window.DD.auth.getToken(),
+      p_path_id: pathId,
+      p_points: points,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
+  }
+  async function deletePath(pathId) {
+    const { data: result, error } = await sb.rpc("dd_delete_path", {
+      p_token: window.DD.auth.getToken(),
+      p_path_id: pathId,
     });
     if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
     return result;
@@ -195,6 +239,31 @@
     }
   }
 
+  // --- Tree Line path point icons -- same "scales with zoom" approach as
+  // the pin badge above, just simpler shapes: a lettered circle for
+  // Start/End, a plain dot for anything in between. ---
+  const PATH_ENDPOINT_BASE_D = 22;
+  const PATH_MID_BASE_D = 12;
+
+  function makePathPointIcon(kind, scale, isPending) {
+    // kind: "start" | "end" | "mid"
+    scale = scale || 1;
+    const pendingClass = isPending ? " is-pending" : "";
+    if (kind === "mid") {
+      const d = Math.max(8, Math.round(PATH_MID_BASE_D * scale));
+      const html = '<div class="dd-path-mid-dot' + pendingClass + '" style="width:' + d + "px;height:" + d + 'px;"></div>';
+      return L.divIcon({ html: html, className: "dd-path-div-icon", iconSize: [d, d], iconAnchor: [d / 2, d / 2] });
+    }
+    const d = Math.max(16, Math.round(PATH_ENDPOINT_BASE_D * scale));
+    const fontPx = Math.max(9, Math.round(11 * scale));
+    const label = kind === "start" ? "S" : "E";
+    const kindClass = kind === "end" ? " dd-path-end" : "";
+    const html =
+      '<div class="dd-path-endpoint-badge' + kindClass + pendingClass + '" style="width:' + d + "px;height:" + d +
+      "px;font-size:" + fontPx + 'px;">' + label + "</div>";
+    return L.divIcon({ html: html, className: "dd-path-div-icon", iconSize: [d, d], iconAnchor: [d / 2, d / 2] });
+  }
+
   // --- Map view state ---
   let mapLeaflet = null;
   let permanentLayer = null;
@@ -207,6 +276,13 @@
   let editingPinId = null; // set while pendingMarker represents an EXISTING pin being edited, not a new drop
   let locationTracker = null; // {watchId, marker} once geolocation is granted
   let followMode = true; // map re-centers on the live-location dot until the user drags away
+
+  let permanentPathsLayer = null;
+  let setupPlaceMode = "pin"; // "pin" | "path" -- which kind of thing a Setup Mode tap places
+  let pendingPathPoints = []; // [{lat,lng}, ...] while placing a new path or editing an existing one
+  let pendingPathMarkers = []; // parallel Leaflet markers, one per pendingPathPoints entry
+  let pendingPathLine = null; // L.polyline joining pendingPathPoints
+  let editingPathId = null; // set while pendingPathPoints represents an EXISTING path being edited, not a new one
 
   const mapsPickerOverlay = document.getElementById("dd-maps-picker-overlay");
   const mapsPickerBody = document.getElementById("dd-maps-picker-body");
@@ -223,6 +299,9 @@
   const recenterBtn = document.getElementById("dd-map-recenter-btn");
 
   const setupBar = document.getElementById("dd-map-setup-bar");
+  const setupModeRow = document.getElementById("dd-map-setup-mode-row");
+  const setupModePinBtn = document.getElementById("dd-map-setup-mode-pin");
+  const setupModePathBtn = document.getElementById("dd-map-setup-mode-path");
   const setupInstructions = document.getElementById("dd-map-setup-instructions");
   const setupFieldsRow = document.getElementById("dd-map-setup-fields");
   const setupNumberInput = document.getElementById("dd-map-setup-number");
@@ -231,6 +310,7 @@
   const setupCancelBtn = document.getElementById("dd-map-setup-cancel");
   const setupConfirmBtn = document.getElementById("dd-map-setup-confirm");
   const setupDeleteBtn = document.getElementById("dd-map-setup-delete");
+  const setupPathUndoBtn = document.getElementById("dd-map-setup-path-undo");
   const setupExitBtn = document.getElementById("dd-map-setup-exit");
 
   function closeHamburgerMenuLocal() {
@@ -425,6 +505,7 @@
         attribution: "Tiles &copy; Esri",
       }).addTo(mapLeaflet);
       permanentLayer = L.layerGroup().addTo(mapLeaflet);
+      permanentPathsLayer = L.layerGroup().addTo(mapLeaflet);
       mapLeaflet.on("click", handleMapClick);
       mapLeaflet.on("zoomend", rescaleAllPins);
       // Only a real user-initiated drag fires 'dragstart' -- programmatic
@@ -441,10 +522,11 @@
     mapLeaflet.setView([def.center.lat, def.center.lng], 19);
     setTimeout(() => mapLeaflet.invalidateSize(), 60);
     startLocationFollow();
-    // Pins come from the server every time a map opens, so a pin an
-    // admin placed from a different phone shows up here too.
-    await refreshPinsForMap(mapId);
+    // Pins and paths come from the server every time a map opens, so
+    // something an admin placed from a different phone shows up here too.
+    await Promise.all([refreshPinsForMap(mapId), refreshPathsForMap(mapId)]);
     renderPermanentPins();
+    renderPermanentPaths();
   }
   function closeMapView() {
     setSetupMode(false);
@@ -465,13 +547,17 @@
     pinMarkersByNumber = {};
     const rec = getMapRecord(currentMapId);
     const scale = scaleForZoom(mapLeaflet);
+    // Only clickable-to-edit while Setup Mode is on AND Pins is the
+    // active placement mode -- otherwise a tap meant for the Tree Line
+    // tool could land on a pin underneath and open the wrong editor.
+    const pinsInteractive = setupModeOn && setupPlaceMode === "pin";
     rec.pins.forEach((pin) => {
       const marker = L.marker([pin.lat, pin.lng], {
         icon: makePinDivIcon(pin.number, pin.rotation || 0, scale, false),
-        interactive: setupModeOn,
+        interactive: pinsInteractive,
         keyboard: false,
       });
-      if (setupModeOn) {
+      if (pinsInteractive) {
         marker.on("click", (e) => {
           // Stop this from ALSO registering as a "place a new pin here"
           // tap on the map underneath.
@@ -481,6 +567,50 @@
       }
       permanentLayer.addLayer(marker);
       pinMarkersByNumber[String(pin.number).toLowerCase()] = marker;
+    });
+  }
+  // === Permanent Tree Line paths ===
+  // Same interactive-only-in-its-own-Setup-submode rule as pins above.
+  // The path currently being edited (editingPathId) is skipped here --
+  // it's rendered by renderPendingPath() instead, as draggable points.
+  function renderPermanentPaths() {
+    if (!permanentPathsLayer) return;
+    permanentPathsLayer.clearLayers();
+    const rec = getMapRecord(currentMapId);
+    const scale = scaleForZoom(mapLeaflet);
+    const pathsInteractive = setupModeOn && setupPlaceMode === "path";
+    rec.paths.forEach((path) => {
+      if (editingPathId === path.id) return;
+      const latlngs = path.points.map((p) => [p.lat, p.lng]);
+      const line = L.polyline(latlngs, {
+        color: "#0aa3a3",
+        weight: 4,
+        dashArray: "8 8",
+        opacity: 0.9,
+        interactive: pathsInteractive,
+      });
+      if (pathsInteractive) {
+        line.on("click", (e) => {
+          if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+          startEditingPath(path);
+        });
+      }
+      permanentPathsLayer.addLayer(line);
+      path.points.forEach((p, i) => {
+        const kind = i === 0 ? "start" : i === path.points.length - 1 ? "end" : "mid";
+        const marker = L.marker([p.lat, p.lng], {
+          icon: makePathPointIcon(kind, scale, false),
+          interactive: pathsInteractive,
+          keyboard: false,
+        });
+        if (pathsInteractive) {
+          marker.on("click", (e) => {
+            if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+            startEditingPath(path);
+          });
+        }
+        permanentPathsLayer.addLayer(marker);
+      });
     });
   }
   function rescaleAllPins() {
@@ -495,6 +625,16 @@
     if (pendingMarker) {
       pendingMarker.setIcon(makePinDivIcon(setupNumberInput?.value || pendingDefaultNumber, pendingRotation, scale, true));
       forceReenableDragging(pendingMarker);
+    }
+    // Paths: a handful of permanent paths at most, so a full re-render on
+    // zoom is simpler than patching each marker in place like pins do.
+    renderPermanentPaths();
+    if (pendingPathMarkers.length) {
+      pendingPathPoints.forEach((p, i) => {
+        const kind = i === 0 ? "start" : i === pendingPathPoints.length - 1 ? "end" : "mid";
+        pendingPathMarkers[i]?.setIcon(makePathPointIcon(kind, scale, true));
+        forceReenableDragging(pendingPathMarkers[i]);
+      });
     }
   }
 
@@ -519,7 +659,15 @@
     setupFieldsRow?.classList.add("hide");
     setupActionsRow?.classList.add("hide");
     setupDeleteBtn?.classList.add("hide");
-    if (setupConfirmBtn) setupConfirmBtn.textContent = "Confirm";
+    if (setupConfirmBtn) {
+      setupConfirmBtn.textContent = "Confirm";
+      // Tree Line's Confirm/Save uses .disabled as a persistent "fewer
+      // than 2 points" gate (see updatePathSetupUI), unlike pins which
+      // only ever disable it transiently during a save request -- reset
+      // it explicitly here so a leftover disabled state from Tree Line
+      // can't follow you back into Pins mode.
+      setupConfirmBtn.disabled = false;
+    }
     renderPermanentPins();
   }
 
@@ -528,6 +676,13 @@
     setupToggleBtn?.classList.toggle("is-active", on);
     setupBar?.classList.toggle("hide", !on);
     exitPendingEditOrPlace();
+    exitPendingPath();
+    // Always reopens on the Pins tool -- Setup Mode is off by default for
+    // most sessions, so there's nothing to "remember" across a re-open.
+    setupPlaceMode = "pin";
+    setupModePinBtn?.classList.add("is-active");
+    setupModePathBtn?.classList.remove("is-active");
+    setupModeRow?.classList.toggle("hide", !on);
     if (on && setupInstructions) setupInstructions.textContent = readyMessage();
   }
   setupToggleBtn?.addEventListener("click", () => {
@@ -536,6 +691,30 @@
     setSetupMode(!setupModeOn);
   });
   setupExitBtn?.addEventListener("click", () => setSetupMode(false));
+
+  // Switches which kind of thing a Setup Mode tap places. Leaving a mode
+  // with something pending cancels it first -- switching tools mid-edit
+  // would otherwise leave a half-placed pin or path hanging around.
+  function setSetupPlaceMode(mode) {
+    if (mode === setupPlaceMode) return;
+    // Unconditionally, not just for whichever tool is being left -- so
+    // switching tools always hands off a fully clean Confirm/Cancel/
+    // Delete row, regardless of what state either tool left it in.
+    exitPendingEditOrPlace();
+    exitPendingPath();
+    setupPlaceMode = mode;
+    setupModePinBtn?.classList.toggle("is-active", mode === "pin");
+    setupModePathBtn?.classList.toggle("is-active", mode === "path");
+    renderPermanentPins();
+    renderPermanentPaths();
+    if (mode === "pin") {
+      if (setupInstructions) setupInstructions.textContent = readyMessage();
+    } else {
+      updatePathSetupUI();
+    }
+  }
+  setupModePinBtn?.addEventListener("click", () => setSetupPlaceMode("pin"));
+  setupModePathBtn?.addEventListener("click", () => setSetupPlaceMode("path"));
 
   // Pulls one existing permanent pin out for editing: draggable position,
   // adjustable direction/number, plus a Delete option -- unlike a brand
@@ -569,6 +748,10 @@
 
   function handleMapClick(e) {
     if (!setupModeOn || !currentMapId) return;
+    if (setupPlaceMode === "path") {
+      handlePathMapClick(e);
+      return;
+    }
     const rec = getMapRecord(currentMapId);
     const scale = scaleForZoom(mapLeaflet);
     if (pendingMarker) {
@@ -664,9 +847,175 @@
     exitPendingEditOrPlace();
     if (setupInstructions) setupInstructions.textContent = "Pin deleted. " + readyMessage();
   }
-  setupConfirmBtn?.addEventListener("click", confirmPendingPin);
-  setupCancelBtn?.addEventListener("click", cancelPendingPin);
-  setupDeleteBtn?.addEventListener("click", deletePendingPin);
+  // The Confirm/Cancel/Delete row is shared between the Pins and Tree
+  // Line tools -- dispatch by whichever placement mode is currently
+  // active rather than duplicating the buttons.
+  setupConfirmBtn?.addEventListener("click", () => {
+    if (setupPlaceMode === "path") confirmPendingPath();
+    else confirmPendingPin();
+  });
+  setupCancelBtn?.addEventListener("click", () => {
+    if (setupPlaceMode === "path") cancelPendingPath();
+    else cancelPendingPin();
+  });
+  setupDeleteBtn?.addEventListener("click", () => {
+    if (setupPlaceMode === "path") deletePendingPathSelection();
+    else deletePendingPin();
+  });
+
+  // === Tree Line paths (Setup Mode) ===
+  // Tap the map to drop points in order -- first is the Start, last is
+  // the End, whatever's tapped in between are waypoints. Finish saves the
+  // whole path at once (unlike pins, which save one at a time). Tapping
+  // an existing path pulls it back into this same pending state for
+  // editing: drag any point, tap the map to add more to the end, Undo
+  // Point to remove the last one, or Delete Path.
+  function handlePathMapClick(e) {
+    pendingPathPoints.push({ lat: e.latlng.lat, lng: e.latlng.lng });
+    renderPendingPath();
+    updatePathSetupUI();
+  }
+  function renderPendingPath() {
+    if (!mapLeaflet) return;
+    pendingPathMarkers.forEach((m) => mapLeaflet.removeLayer(m));
+    pendingPathMarkers = [];
+
+    const latlngs = pendingPathPoints.map((p) => [p.lat, p.lng]);
+    if (!pendingPathLine) {
+      pendingPathLine = L.polyline(latlngs, {
+        color: "#55a6d9",
+        weight: 4,
+        dashArray: "8 8",
+        opacity: 0.95,
+        interactive: false,
+      }).addTo(mapLeaflet);
+    } else {
+      pendingPathLine.setLatLngs(latlngs);
+    }
+
+    const scale = scaleForZoom(mapLeaflet);
+    pendingPathPoints.forEach((p, i) => {
+      const kind = i === 0 ? "start" : i === pendingPathPoints.length - 1 ? "end" : "mid";
+      const marker = L.marker([p.lat, p.lng], {
+        icon: makePathPointIcon(kind, scale, true),
+        draggable: true,
+        keyboard: false,
+      }).addTo(mapLeaflet);
+      // Dragging only updates that point's position and the line -- it
+      // never changes point count, so the markers themselves don't need
+      // rebuilding here (that would fight with the drag gesture anyway).
+      marker.on("dragend", (ev) => {
+        const ll = ev.target.getLatLng();
+        pendingPathPoints[i] = { lat: ll.lat, lng: ll.lng };
+        if (pendingPathLine) pendingPathLine.setLatLngs(pendingPathPoints.map((pt) => [pt.lat, pt.lng]));
+      });
+      pendingPathMarkers.push(marker);
+    });
+  }
+  function updatePathSetupUI() {
+    setupFieldsRow?.classList.add("hide"); // House #/Direction fields are pin-only
+    const n = pendingPathPoints.length;
+    const isEditing = !!editingPathId;
+
+    if (setupInstructions) {
+      if (n === 0) {
+        setupInstructions.textContent = "Tap the map to place the Start point.";
+      } else if (n === 1) {
+        setupInstructions.textContent = "Tap the map to add the End point (or more points in between).";
+      } else if (isEditing) {
+        setupInstructions.textContent = "Drag any point to adjust, tap the map to add more, or Save.";
+      } else {
+        setupInstructions.textContent = "Tap to add more points, drag any point to adjust, then Finish when you've reached the end.";
+      }
+    }
+
+    setupActionsRow?.classList.toggle("hide", n === 0 && !isEditing);
+    setupPathUndoBtn?.classList.toggle("hide", n === 0 || (isEditing && n <= 2));
+    setupDeleteBtn?.classList.toggle("hide", !isEditing);
+    if (setupDeleteBtn) setupDeleteBtn.textContent = "Delete Path";
+    if (setupConfirmBtn) {
+      setupConfirmBtn.disabled = n < 2;
+      setupConfirmBtn.textContent = isEditing ? "Save Path" : "Finish Path";
+    }
+  }
+  setupPathUndoBtn?.addEventListener("click", () => {
+    if (!pendingPathPoints.length) return;
+    if (editingPathId && pendingPathPoints.length <= 2) return; // keep at least Start+End while editing
+    pendingPathPoints.pop();
+    renderPendingPath();
+    updatePathSetupUI();
+  });
+
+  // Tears down whatever path is currently pending (new or being edited)
+  // and re-renders the permanent layer -- shared by Finish/Save, Cancel,
+  // Delete, and Setup Mode toggling/switching, same role
+  // exitPendingEditOrPlace plays for pins.
+  function exitPendingPath() {
+    pendingPathMarkers.forEach((m) => mapLeaflet?.removeLayer(m));
+    pendingPathMarkers = [];
+    if (pendingPathLine) {
+      mapLeaflet?.removeLayer(pendingPathLine);
+      pendingPathLine = null;
+    }
+    pendingPathPoints = [];
+    editingPathId = null;
+    setupActionsRow?.classList.add("hide");
+    setupPathUndoBtn?.classList.add("hide");
+    setupDeleteBtn?.classList.add("hide");
+    if (setupConfirmBtn) setupConfirmBtn.textContent = "Finish Path";
+    renderPermanentPaths();
+  }
+  // Pulls one existing permanent path out for editing -- same idea as
+  // startEditingPin, just for an ordered list of points instead of one.
+  function startEditingPath(path) {
+    if (pendingPathPoints.length || pendingMarker) return; // already placing/editing something else
+    editingPathId = path.id;
+    pendingPathPoints = path.points.map((p) => ({ lat: p.lat, lng: p.lng }));
+    renderPermanentPaths(); // skips this path now that editingPathId is set
+    renderPendingPath();
+    updatePathSetupUI();
+  }
+
+  async function confirmPendingPath() {
+    if (pendingPathPoints.length < 2 || !currentMapId) return;
+    const mapId = currentMapId;
+    const points = pendingPathPoints.map((p) => ({ lat: p.lat, lng: p.lng }));
+
+    if (setupConfirmBtn) setupConfirmBtn.disabled = true;
+    const result = editingPathId ? await updatePath(editingPathId, points) : await createPath(mapId, points);
+    if (setupConfirmBtn) setupConfirmBtn.disabled = false;
+
+    if (!result || !result.ok) {
+      showServerError(result && result.error);
+      return;
+    }
+
+    await refreshPathsForMap(mapId);
+    exitPendingPath();
+    updatePathSetupUI();
+  }
+  function cancelPendingPath() {
+    exitPendingPath();
+    updatePathSetupUI();
+  }
+  async function deletePendingPathSelection() {
+    if (!editingPathId || !currentMapId) return;
+    const mapId = currentMapId;
+    const pathId = editingPathId;
+
+    if (setupDeleteBtn) setupDeleteBtn.disabled = true;
+    const result = await deletePath(pathId);
+    if (setupDeleteBtn) setupDeleteBtn.disabled = false;
+
+    if (!result || !result.ok) {
+      showServerError(result && result.error);
+      return;
+    }
+
+    await refreshPathsForMap(mapId);
+    exitPendingPath();
+    updatePathSetupUI();
+  }
 
   // === Search ===
   function handleSearch() {
