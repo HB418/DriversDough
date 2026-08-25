@@ -876,8 +876,21 @@ begin
 end;
 $$;
 
+-- The app now creates deliveries offline-first: the client generates its
+-- own id (crypto.randomUUID()) the instant a delivery is added, saves it
+-- to local storage, and shows it in the table right away -- this function
+-- only runs later, in the background, whenever there's a connection. The
+-- explicit p_id (rather than letting the table's default fill one in) is
+-- what makes that safe: the client already committed to that id locally,
+-- so update/delete calls that fire before this create even lands need to
+-- reference the SAME id, not one the server made up afterward.
+-- "on conflict do nothing" makes a retried create idempotent -- if a
+-- background sync's response got lost after the insert actually
+-- succeeded (a dropped connection, a backgrounded tab, etc.), retrying
+-- with the same id is a safe no-op instead of a duplicate delivery.
+drop function if exists public.dd_create_entry(text, text, text, text, text, text, boolean, boolean, text, text);
 create or replace function public.dd_create_entry(
-  p_token text, p_street text, p_order_type text, p_total text, p_tip text, p_fee text,
+  p_token text, p_id uuid, p_street text, p_order_type text, p_total text, p_tip text, p_fee text,
   p_cash_tip boolean, p_partial_cash_tip boolean, p_partial_cash_amount text, p_time text
 ) returns jsonb
 language plpgsql
@@ -886,7 +899,7 @@ set search_path = public, extensions, pg_temp
 as $$
 declare
   v_account public.accounts%rowtype;
-  v_id uuid;
+  v_id uuid := coalesce(p_id, gen_random_uuid());
 begin
   v_account := public.dd_account_for_token(p_token);
   if v_account.id is null then
@@ -894,10 +907,10 @@ begin
   end if;
 
   insert into public.delivery_entries
-    (account_id, street, order_type, total, tip, fee, cash_tip, partial_cash_tip, partial_cash_amount, entry_time)
+    (id, account_id, street, order_type, total, tip, fee, cash_tip, partial_cash_tip, partial_cash_amount, entry_time)
   values
-    (v_account.id, p_street, p_order_type, p_total, p_tip, p_fee, p_cash_tip, p_partial_cash_tip, p_partial_cash_amount, p_time)
-  returning id into v_id;
+    (v_id, v_account.id, p_street, p_order_type, p_total, p_tip, p_fee, p_cash_tip, p_partial_cash_tip, p_partial_cash_amount, p_time)
+  on conflict (id) do nothing;
 
   return jsonb_build_object('ok', true, 'id', v_id);
 end;
@@ -1060,7 +1073,7 @@ grant execute on function public.dd_delete_code(text, uuid) to anon, authenticat
 grant execute on function public.dd_get_entries(text) to anon, authenticated;
 grant execute on function public.dd_get_time_card(text) to anon, authenticated;
 grant execute on function public.dd_get_stats_history(text) to anon, authenticated;
-grant execute on function public.dd_create_entry(text, text, text, text, text, text, boolean, boolean, text, text) to anon, authenticated;
+grant execute on function public.dd_create_entry(text, uuid, text, text, text, text, text, boolean, boolean, text, text) to anon, authenticated;
 grant execute on function public.dd_update_entry(text, uuid, text, text, text, text, text, boolean, boolean, text, text) to anon, authenticated;
 grant execute on function public.dd_delete_entry(text, uuid) to anon, authenticated;
 grant execute on function public.dd_set_shifts(text, text, jsonb) to anon, authenticated;

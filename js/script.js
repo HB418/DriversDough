@@ -775,6 +775,19 @@
     TIP_BUCKET_DEFS.forEach((b) => (target.tipBuckets[b.key] += bucket.tipBuckets?.[b.key] || 0));
   }
 
+  // Tip-to-order-total, both as a ratio ("1 : 7.2" -- for every $1 of
+  // tip, about $7.20 of order total) and a percentage ("13.9%"). Both
+  // come straight out of the same two numbers every stats bucket already
+  // tracks (tipValue, orderTotal) -- nothing new to record, purely
+  // computed at render time.
+  function tipToOrderTotalStats(bucket) {
+    if (!bucket.tipValue || !bucket.orderTotal) return { ratio: "—", percent: "—" };
+    return {
+      ratio: `1 : ${(bucket.orderTotal / bucket.tipValue).toFixed(1)}`,
+      percent: `${((bucket.tipValue / bucket.orderTotal) * 100).toFixed(1)}%`,
+    };
+  }
+
   // { "2026-08-21": { "17": {deliveries, tipCount, tipValue, orderTotal,
   //   feeCounts:{...}, tipBuckets:{...}}, "18": {...}, ... }, ... } — sparse,
   // only hours that actually had a delivery exist. This is the driver's
@@ -1282,6 +1295,9 @@
     addStatsRow(summary, "Tips", String(t.tipCount));
     addStatsRow(summary, "Tip Value", `$${t.tipValue.toFixed(2)}`);
     addStatsRow(summary, "Order Total", `$${t.orderTotal.toFixed(2)}`);
+    const tipRatio = tipToOrderTotalStats(t);
+    addStatsRow(summary, "Tip : Order Total", tipRatio.ratio);
+    addStatsRow(summary, "Tip % of Order Total", tipRatio.percent);
 
     // Over Time: only meaningful past a single day -- Day's own "By Hour"
     // section below already IS its over-time view. Week/Month walk day by
@@ -1512,11 +1528,85 @@
     if (e.key === "Escape" && statsOverlay?.classList.contains("is-open")) closeStats();
   });
 
-  // Current (unarchived) deliveries for this shift — lives on the server
-  // now, tied to the account, so it survives a reload/closed tab AND a
-  // different device the same way everything else here does. Stays empty
-  // until refreshEntries() (below) fills it in after login.
+  // Current (unarchived) deliveries for this shift — saved to THIS DEVICE
+  // the instant they're added (see loadLocalEntries/saveLocalEntries
+  // below), so adding one never waits on the network and works with no
+  // connection at all. Each entry still makes its way to the server too,
+  // for durability and so it isn't only sitting in one browser, but that
+  // happens quietly in the background (syncPendingEntries below) rather
+  // than blocking the table from updating. Stays empty until
+  // refreshEntries() fills it in after login.
   let entries = [];
+
+  // Per-account so a shared device switching drivers never mixes shifts.
+  function entriesStorageKey() {
+    const id = window.DD.auth?.getSession()?.id;
+    return id ? "driversDoughEntries:" + id : null;
+  }
+  function loadLocalEntries() {
+    const key = entriesStorageKey();
+    if (!key) return [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      return [];
+    }
+  }
+  function saveLocalEntries() {
+    const key = entriesStorageKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(entries));
+    } catch (err) {}
+  }
+  // Ids of already-synced deliveries that were deleted while offline (or
+  // just too fast for the request to have gone out yet) and still need
+  // to tell the server. Kept OUT of `entries` itself -- once the driver
+  // deletes something it needs to be gone from the table right away, not
+  // sitting there as a tombstone until a background request confirms it.
+  let pendingDeletes = [];
+  function pendingDeletesStorageKey() {
+    const id = window.DD.auth?.getSession()?.id;
+    return id ? "driversDoughPendingDeletes:" + id : null;
+  }
+  function loadPendingDeletes() {
+    const key = pendingDeletesStorageKey();
+    if (!key) return [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      return [];
+    }
+  }
+  function savePendingDeletes() {
+    const key = pendingDeletesStorageKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(pendingDeletes));
+    } catch (err) {}
+  }
+  function clearLocalEntries() {
+    const key = entriesStorageKey();
+    const delKey = pendingDeletesStorageKey();
+    if (key) {
+      try {
+        localStorage.removeItem(key);
+      } catch (err) {}
+    }
+    if (delKey) {
+      try {
+        localStorage.removeItem(delKey);
+      } catch (err) {}
+    }
+    entries = [];
+    pendingDeletes = [];
+  }
+  // Exposed so auth.js's logOut() can wipe this device's copy of the
+  // outgoing driver's shift on the way out.
+  window.DD.driverData = window.DD.driverData || {};
+  window.DD.driverData.clearLocalEntries = clearLocalEntries;
 
   function mapEntryRow(row) {
     return {
@@ -1530,23 +1620,74 @@
       partialCashTip: !!row.partialCashTip,
       partialCashAmount: row.partialCashAmount || "",
       time: row.time || "",
+      // A row that came FROM the server is already synced by definition.
+      synced: true,
+      pendingOp: null,
+      rev: 0,
     };
   }
 
+  // Loads whatever this device already has saved for the current driver
+  // instantly (no network, nothing to wait on), renders it right away,
+  // then reconciles with the server in the background: anything the
+  // server has that this device doesn't (a delivery added from a
+  // different device, or storage that got cleared after already syncing)
+  // gets folded in. Local entries still waiting to sync are left alone.
   async function refreshEntries() {
+    entries = loadLocalEntries();
+    pendingDeletes = loadPendingDeletes();
+    renderTable();
+    updateCalculations();
+    syncPendingEntries(); // fire-and-forget: resume anything left over from last time
     try {
       const { data, error } = await sb.rpc("dd_get_entries", { p_token: getDriverToken() });
       if (error || !data || !data.ok) return false;
-      entries = (data.entries || []).map(mapEntryRow);
+      const localIds = new Set(entries.map((e) => e.id));
+      const deleting = new Set(pendingDeletes);
+      (data.entries || []).forEach((row) => {
+        // Skip anything already deleted locally but not yet confirmed on
+        // the server -- otherwise a reconciliation that lands between the
+        // delete being queued and it actually going through would bring
+        // the "deleted" row right back.
+        if (!localIds.has(row.id) && !deleting.has(row.id)) entries.push(mapEntryRow(row));
+      });
+      saveLocalEntries();
       return true;
     } catch (err) {
       return false;
     }
   }
 
+  // Marks a new-or-edited entry as needing to go up to the server. Bumps
+  // `rev` every time so a sync pass that was already in flight when this
+  // fires can tell its result is stale (see syncPendingEntries) instead
+  // of wrongly marking a newer edit as caught up.
+  function markEntryDirty(entry) {
+    entry.rev = (entry.rev || 0) + 1;
+    entry.pendingOp = entry.synced ? "update" : "create";
+  }
+  // Deleting an entry removes it from the table immediately either way.
+  // One that never made it to the server (and isn't mid-create right
+  // now) has nothing to tell it -- it just disappears. One that's
+  // already synced, OR whose create request is still in flight (see
+  // `inFlight` in syncPendingEntries -- its row might land on the server
+  // a moment from now even though `synced` hasn't flipped true yet),
+  // additionally goes on the pendingDeletes outbox so the background
+  // sync tells the server too, without leaving a visible tombstone row
+  // behind in the meantime.
+  function markEntryDeleted(entry) {
+    entries = entries.filter((e) => e !== entry);
+    if (entry.synced || entry.inFlight) {
+      pendingDeletes.push(entry.id);
+      savePendingDeletes();
+    }
+    saveLocalEntries();
+  }
+
   async function createEntryOnServer(e) {
     const { data, error } = await sb.rpc("dd_create_entry", {
       p_token: getDriverToken(),
+      p_id: e.id,
       p_street: e.street,
       p_order_type: e.orderType,
       p_total: e.total,
@@ -1595,6 +1736,79 @@
     if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
     return data;
   }
+
+  // Pushes whatever's changed locally up to the server: one pass over
+  // every entry with a pendingOp, in the order they're in. Safe to call
+  // as often as needed -- entries with nothing pending are skipped
+  // instantly, and a call that lands while one's already running just
+  // no-ops instead of racing it.
+  //
+  // The rev check is what keeps a concurrent edit from getting lost: if
+  // the driver edits an entry again while its create/update is still in
+  // flight, that edit already bumped rev and set its own pendingOp before
+  // this request's result comes back. Only clear pendingOp if rev is
+  // still what it was when THIS request went out -- otherwise leave it
+  // (or, for a create whose row now exists server-side, downgrade it to
+  // "update") so the next pass sends the latest data instead of silently
+  // dropping it.
+  // Deletes are handled separately from the create/update loop below:
+  // markEntryDeleted() already dropped the entry from `entries` (and the
+  // table) the instant it was deleted, so all that's left to do here is
+  // work through the id outbox and tell the server. dd_delete_entry is a
+  // no-op on an id it's never seen, so retrying (or sending a delete for
+  // something whose create never actually landed) is always safe.
+  async function syncPendingDeletes() {
+    for (const id of pendingDeletes.slice()) {
+      const result = await deleteEntryOnServer(id);
+      if (result && result.ok) {
+        pendingDeletes = pendingDeletes.filter((d) => d !== id);
+        savePendingDeletes();
+      }
+    }
+  }
+
+  let isSyncing = false;
+  async function syncPendingEntries() {
+    if (isSyncing) return;
+    if (!window.DD.auth || !window.DD.auth.isLoggedIn()) return;
+    isSyncing = true;
+    try {
+      await syncPendingDeletes();
+      for (const entry of entries.slice()) {
+        if (!entry.pendingOp) continue;
+        const op = entry.pendingOp;
+        const rev = entry.rev;
+        if (op === "create") {
+          // Marks the window where this row might land on the server
+          // even though `synced` hasn't flipped true yet -- see
+          // markEntryDeleted, which checks this to avoid orphaning a
+          // row that gets deleted mid-request.
+          entry.inFlight = true;
+          const result = await createEntryOnServer(entry);
+          entry.inFlight = false;
+          if (result && result.ok) {
+            entry.synced = true;
+            entry.pendingOp = entry.rev === rev ? null : "update";
+            saveLocalEntries();
+          }
+        } else if (op === "update") {
+          const result = await updateEntryOnServer(entry.id, entry);
+          if (result && result.ok) {
+            if (entry.rev === rev) entry.pendingOp = null;
+            saveLocalEntries();
+          }
+        }
+      }
+    } finally {
+      isSyncing = false;
+    }
+  }
+  // Retries whenever the connection comes back, plus a 25s backstop for
+  // connections that recover without ever firing a clean "online" event
+  // -- spotty cell service on the road does that a lot more than wifi.
+  window.addEventListener("online", () => syncPendingEntries());
+  setInterval(() => syncPendingEntries(), 25000);
+
   // Index into `entries` currently loaded in the form for editing, or null when adding new.
   let editIndex = null;
   // The confirmed cash portion of the tip for the entry currently in the
@@ -1982,22 +2196,27 @@
       time: (editIndex !== null && entries[editIndex]?.time) || nowHHMM(),
     };
     const wasEdit = editIndex !== null && !!entries[editIndex];
-    const editingId = wasEdit ? entries[editIndex].id : null;
 
-    if (submitBtn) submitBtn.disabled = true;
-    const result = editingId ? await updateEntryOnServer(editingId, entryData) : await createEntryOnServer(entryData);
-    if (submitBtn) submitBtn.disabled = false;
-    if (!result || !result.ok) {
-      showServerError(result && result.error);
-      return;
+    // Local-first: the table, calculations, and confirmation popup all
+    // update from this device's own copy right away -- nothing here
+    // waits on the network. The server call happens in the background
+    // (syncPendingEntries), so this works exactly the same with a full
+    // signal, one bar, or none at all.
+    if (wasEdit) {
+      Object.assign(entries[editIndex], entryData);
+      markEntryDirty(entries[editIndex]);
+    } else {
+      const newEntry = Object.assign({ id: crypto.randomUUID(), synced: false, pendingOp: null, rev: 0 }, entryData);
+      markEntryDirty(newEntry);
+      entries.push(newEntry);
     }
-
-    await refreshEntries();
+    saveLocalEntries();
     renderTable();
     updateCalculations();
     showOrderConfirmation(entryData, wasEdit);
     form?.reset();
     closeForm();
+    syncPendingEntries();
   }
 
   // Cents-first currency entry: digits fill in from the right (pennies,
@@ -2182,7 +2401,12 @@
     }
 
     editIndex = null;
-    await Promise.all([refreshEntries(), refreshTimeCard(), refreshStatsHistory()]);
+    // dd_end_night just archived these deliveries' numbers into stats and
+    // wiped the server's copy of them -- any that hadn't finished their
+    // background sync yet are moot now (their data already made it into
+    // the deltas above), so the local copy clears the same way.
+    clearLocalEntries();
+    await Promise.all([refreshTimeCard(), refreshStatsHistory()]);
     if (timecardOverlay?.classList.contains("is-open")) renderTimeCard();
     renderTable();
     updateCalculations();
@@ -2243,16 +2467,16 @@
           danger: true,
           highlightTop: true,
           highlightBottom: true,
-          onOk: async () => {
-            const id = entries[idx]?.id;
-            const result = id ? await deleteEntryOnServer(id) : { ok: true };
-            if (!result || !result.ok) {
-              showServerError(result && result.error);
-              return;
-            }
-            await refreshEntries();
+          onOk: () => {
+            const entry = entries[idx];
+            if (!entry) return;
+            // Local-first, same as adding/editing: gone from the table
+            // immediately, with the server-side delete (if this entry
+            // had even synced yet) happening in the background.
+            markEntryDeleted(entry);
             renderTable();
             updateCalculations();
+            syncPendingEntries();
           },
         });
       },
@@ -2270,7 +2494,9 @@
     refreshPunchButton();
     if (timecardOverlay?.classList.contains("is-open")) renderTimeCard();
   }
-  window.DD.driverData = { refreshAll };
+  // Merge onto driverData rather than replacing it -- clearLocalEntries
+  // was already attached above, and auth.js's logOut() needs both.
+  Object.assign(window.DD.driverData, { refreshAll });
 
   // Init
   addBtn?.addEventListener("click", startAdd);

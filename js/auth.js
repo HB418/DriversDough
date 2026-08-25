@@ -84,6 +84,25 @@
     return readStoredToken();
   }
 
+  // A copy of the last session the server actually confirmed, kept
+  // separately from the token itself -- lets restoreSession() below get
+  // the driver back into the app on a saved login even with no
+  // connection at all, the same way adding a delivery works offline now.
+  const LAST_SESSION_KEY = "driversDoughLastSession";
+  function writeLastSession(session) {
+    try {
+      localStorage.setItem(LAST_SESSION_KEY, JSON.stringify(session));
+    } catch (err) {}
+  }
+  function readLastSession() {
+    try {
+      const raw = localStorage.getItem(LAST_SESSION_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (err) {
+      return null;
+    }
+  }
+
   function applySession(token, account) {
     cachedSession = {
       id: account.id,
@@ -93,18 +112,31 @@
       trackStats: account.trackStats !== false,
     };
     writeStoredToken(token);
+    writeLastSession(cachedSession);
   }
 
   // Called once when the app loads: if a token was saved from a previous
   // visit, ask the server whether it's still good and fill in
   // cachedSession from that -- this is what makes "stay logged in on
   // this device" work across reloads.
+  //
+  // Only a clean answer FROM the server clears a saved login -- a
+  // network failure (no signal, server unreachable, etc.) is not the
+  // same thing as the server saying this session is invalid, so that
+  // falls back to the last confirmed session instead of kicking the
+  // driver out just because they lost connection. It gets re-verified
+  // for real the next time this succeeds.
   async function restoreSession() {
     const token = readStoredToken();
     if (!token) return null;
     try {
       const { data, error } = await sb.rpc("dd_get_session", { p_token: token });
-      if (error || !data) {
+      if (error) {
+        const cached = readLastSession();
+        if (cached) cachedSession = cached;
+        return cachedSession;
+      }
+      if (!data) {
         clearStoredToken();
         return null;
       }
@@ -115,9 +147,12 @@
         isAdmin: !!data.isAdmin,
         trackStats: data.trackStats !== false,
       };
+      writeLastSession(cachedSession);
       return cachedSession;
     } catch (err) {
-      return null;
+      const cached = readLastSession();
+      if (cached) cachedSession = cached;
+      return cachedSession;
     }
   }
 
@@ -173,6 +208,14 @@
     const token = readStoredToken();
     cachedSession = null;
     clearStoredToken();
+    try {
+      localStorage.removeItem(LAST_SESSION_KEY);
+    } catch (err) {}
+    // This device's copy of the outgoing driver's shift -- a shared
+    // device switching drivers should never carry it over to whoever
+    // logs in next. Anything still mid-sync at this point already made
+    // it into that driver's own totals locally; nothing more to do here.
+    window.DD.driverData?.clearLocalEntries?.();
     if (token) {
       // sb.rpc() returns a "thenable" builder, not a real Promise, so it
       // doesn't have .catch() itself -- Promise.resolve() adopts it into
@@ -211,7 +254,10 @@
     try {
       const { data, error } = await sb.rpc("dd_set_track_stats", { p_token: getToken(), p_track_stats: !!trackStats });
       if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
-      if (data && data.ok && cachedSession) cachedSession.trackStats = !!trackStats;
+      if (data && data.ok && cachedSession) {
+        cachedSession.trackStats = !!trackStats;
+        writeLastSession(cachedSession);
+      }
       return data;
     } catch (err) {
       return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
