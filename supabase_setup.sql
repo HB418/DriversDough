@@ -995,8 +995,19 @@ $$;
 -- current delivery for this account -- all three together, so a dropped
 -- connection partway through can't leave stats archived but entries not
 -- cleared (or vice versa).
+--
+-- p_entry_ids is the exact set of delivery ids the client actually folded
+-- into p_deltas (i.e. everything in its local list at the moment End Night
+-- was pressed). The delete below is scoped to just those ids -- NOT a
+-- blanket "every row for this account" -- so a row that's sitting in
+-- delivery_entries but wasn't part of what got archived (e.g. a prior End
+-- Night that failed partway through some other night, before this device
+-- had pulled it into its local list) survives and gets a chance to be
+-- picked up and archived properly later, instead of being silently wiped
+-- out by whatever End Night happens to run next.
+drop function if exists public.dd_end_night(text, text, jsonb, text);
 create or replace function public.dd_end_night(
-  p_token text, p_date_key text, p_deltas jsonb, p_cc_gratuity text
+  p_token text, p_date_key text, p_deltas jsonb, p_cc_gratuity text, p_entry_ids uuid[]
 ) returns jsonb
 language plpgsql
 security definer
@@ -1039,7 +1050,8 @@ begin
     on conflict (account_id, date_key) do update set cc_gratuity = excluded.cc_gratuity;
   end if;
 
-  delete from public.delivery_entries where account_id = v_account.id;
+  delete from public.delivery_entries
+    where account_id = v_account.id and id = any(coalesce(p_entry_ids, array[]::uuid[]));
 
   return jsonb_build_object('ok', true);
 end;
@@ -1077,7 +1089,7 @@ grant execute on function public.dd_create_entry(text, uuid, text, text, text, t
 grant execute on function public.dd_update_entry(text, uuid, text, text, text, text, text, boolean, boolean, text, text) to anon, authenticated;
 grant execute on function public.dd_delete_entry(text, uuid) to anon, authenticated;
 grant execute on function public.dd_set_shifts(text, text, jsonb) to anon, authenticated;
-grant execute on function public.dd_end_night(text, text, jsonb, text) to anon, authenticated;
+grant execute on function public.dd_end_night(text, text, jsonb, text, uuid[]) to anon, authenticated;
 
 -- A Row Level Security policy only FILTERS which rows are visible -- it
 -- doesn't grant the read itself. These four lines grant the actual

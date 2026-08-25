@@ -1726,12 +1726,19 @@
     return data;
   }
 
-  async function submitEndNight(dateKey, deltas, ccGratuity) {
+  async function submitEndNight(dateKey, deltas, ccGratuity, entryIds) {
     const { data, error } = await sb.rpc("dd_end_night", {
       p_token: getDriverToken(),
       p_date_key: dateKey,
       p_deltas: deltas,
       p_cc_gratuity: ccGratuity,
+      // Only these ids get cleared from delivery_entries server-side --
+      // NOT a blanket "wipe everything for this account." Keeps a stray
+      // server row that never made it into this device's local list (e.g.
+      // a previous End Night that failed partway through) from being
+      // silently deleted before it's ever actually archived. See the SQL
+      // file for the full explanation.
+      p_entry_ids: entryIds,
     });
     if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
     return data;
@@ -2393,8 +2400,9 @@
     // clearing today's entries still happen normally either way.
     const trackingStats = window.DD.auth?.getSession()?.trackStats !== false;
     const deltas = trackingStats ? computeEntriesStatsDeltas(entries) : {};
+    const entryIds = entries.map((e) => e.id);
 
-    const result = await submitEndNight(key, deltas, ccGratuity);
+    const result = await submitEndNight(key, deltas, ccGratuity, entryIds);
     if (!result || !result.ok) {
       showServerError(result && result.error);
       return;
