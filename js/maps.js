@@ -1151,6 +1151,22 @@
   // sane if those ever change.
   const ALLEY_JUNCTION_GUARD_METERS =
     Math.max(ENTRANCE_ROAD_INSIDE_METERS + ENTRANCE_ROAD_OUTSIDE_METERS, OUT_ROAD_HALF_WIDTH_METERS * 2) / 2 + 0.5;
+  // Some alleys are real cut-throughs that touch BOTH In Road and Out Road
+  // (e.g. Alley One through Four); others -- Offshoot Alley being the
+  // known case -- are a dead-end spur off just ONE road, whose other end
+  // simply stops in the woods rather than connecting to anything. Without
+  // this cap, snapAlleyToRoads (below) always forced BOTH ends onto some
+  // road, picking whichever pairing minimized the COMBINED distance
+  // across both ends -- which for a spur meant a genuinely close, correct
+  // match on the real end could lose out to a pairing that made the
+  // dead-end's forced (nonsense) match slightly less bad, snapping the
+  // real junction onto the wrong road entirely. A closest point beyond
+  // this distance is treated as "not actually near this road" and left
+  // unsnapped instead of forced. Comfortably above a real junction's
+  // expected distance (a couple meters, per ALLEY_JUNCTION_GUARD_METERS
+  // above, for hand-placed pins) and comfortably below the tens-of-meters
+  // gap a genuine dead-end tip sits at.
+  const ALLEY_MAX_SNAP_METERS = 6;
 
   // Amazon Campground specific: waypoint routes 1 and 2 are one continuous
   // real dirt road (per Heath) that just got drawn as two separate
@@ -1410,45 +1426,84 @@
     const hitEndIn = closestPointOnPolyline(inRoadPolyline, end, ALLEY_JUNCTION_GUARD_METERS);
     const hitStartOut = closestPointOnPolyline(outRoadPolyline, start, ALLEY_JUNCTION_GUARD_METERS);
     const hitEndOut = closestPointOnPolyline(outRoadPolyline, end, ALLEY_JUNCTION_GUARD_METERS);
-    // Two ways to pair the alley's two ends with the two roads -- pick
-    // whichever pairing has the smaller total gap, rather than assuming
-    // the alley's stored Start is always the In Road end.
-    const startToIn = hitStartIn.distM + hitEndOut.distM;
-    const endToIn = hitEndIn.distM + hitStartOut.distM;
-    const newAlleyPoints = alleyPoints.slice();
-    let inHit, outHit, inAtStart;
-    if (startToIn <= endToIn) {
-      inHit = hitStartIn;
-      outHit = hitEndOut;
-      newAlleyPoints[0] = inHit.point;
-      newAlleyPoints[newAlleyPoints.length - 1] = outHit.point;
-      inAtStart = true;
-    } else {
-      inHit = hitEndIn;
-      outHit = hitStartOut;
-      newAlleyPoints[newAlleyPoints.length - 1] = inHit.point;
-      newAlleyPoints[0] = outHit.point;
-      inAtStart = false;
+    // Decide each end's road independently, by its own closest valid
+    // (within ALLEY_MAX_SNAP_METERS) match -- NOT by picking whichever of
+    // the two whole-alley pairings has the smaller COMBINED distance
+    // across both ends. That total-distance approach was tried first and
+    // still picked the wrong road for a dead-end spur (Offshoot Alley):
+    // even after adding the cap, it only validated the pairing the sum
+    // comparison had already committed to, and for a spur the "wrong"
+    // pairing's total can beat the "right" one -- a genuine ~1m match to
+    // Out Road lost out because the pairing that used it also forced the
+    // free end onto a ~24m match, and summed that was worse than pairing
+    // the free end with a merely-bad ~38m match while dragging the real
+    // ~1m match's end onto In Road at ~13m instead. Scoring each end on
+    // its own merits, independently, avoids that entirely.
+    function pickRoad(hitIn, hitOut) {
+      const validIn = hitIn.distM <= ALLEY_MAX_SNAP_METERS;
+      const validOut = hitOut.distM <= ALLEY_MAX_SNAP_METERS;
+      if (!validIn && !validOut) return null;
+      if (validIn && (!validOut || hitIn.distM <= hitOut.distM)) return "in";
+      return "out";
     }
-    // The road's own true edge at each connection point -- BEFORE either
-    // insertion, since inHit/outHit's segmentIndex refers to these
+    let startRoad = pickRoad(hitStartIn, hitStartOut);
+    let endRoad = pickRoad(hitEndIn, hitEndOut);
+    // Both ends independently wanting the SAME single road isn't a
+    // junction this system models (an alley connecting to one road at
+    // both ends) -- keep only the closer of the two, free the other,
+    // rather than double-connecting to one road and leaving the other
+    // untouched entirely.
+    if (startRoad && startRoad === endRoad) {
+      const startDist = startRoad === "in" ? hitStartIn.distM : hitStartOut.distM;
+      const endDist = endRoad === "in" ? hitEndIn.distM : hitEndOut.distM;
+      if (startDist <= endDist) endRoad = null;
+      else startRoad = null;
+    }
+    const newAlleyPoints = alleyPoints.slice();
+    const startHit = startRoad === "in" ? hitStartIn : startRoad === "out" ? hitStartOut : null;
+    const endHit = endRoad === "in" ? hitEndIn : endRoad === "out" ? hitEndOut : null;
+    if (startHit) newAlleyPoints[0] = startHit.point;
+    if (endHit) newAlleyPoints[newAlleyPoints.length - 1] = endHit.point;
+    // The road's own true edge at each connection point -- BEFORE any
+    // insertion below, since these hits' segmentIndex refers to the
     // original arrays. See crossSectionAtHit's own comment for why the
     // alley needs this at all (a shared vertex alone doesn't visually
-    // connect two separately-built ribbons).
-    const inCrossSection = crossSectionAtHit(inRoadPolyline, inHit, inRoadWidths);
-    const outCrossSection = crossSectionAtHit(outRoadPolyline, outHit, outRoadWidths);
-    const inInsert = insertPointOnPolyline(inRoadPolyline, inHit, inRoadWidths);
-    const outInsert = insertPointOnPolyline(outRoadPolyline, outHit);
+    // connect two separately-built ribbons). null when that end isn't a
+    // real connection -- the alley just keeps its own natural end cap
+    // there, same as any other dead end.
+    const startCrossSection = startHit
+      ? crossSectionAtHit(startRoad === "in" ? inRoadPolyline : outRoadPolyline, startHit, startRoad === "in" ? inRoadWidths : outRoadWidths)
+      : null;
+    const endCrossSection = endHit
+      ? crossSectionAtHit(endRoad === "in" ? inRoadPolyline : outRoadPolyline, endHit, endRoad === "in" ? inRoadWidths : outRoadWidths)
+      : null;
+    // startRoad and endRoad can never both be "in" or both "out" (the
+    // same-road conflict above rules that out), so each road polyline
+    // gets touched by at most one of the two inserts below.
+    let workingInRoad = inRoadPolyline;
+    let workingInWidths = inRoadWidths;
+    let workingOutRoad = outRoadPolyline;
+    if (startRoad === "in") {
+      const ins = insertPointOnPolyline(inRoadPolyline, hitStartIn, inRoadWidths);
+      workingInRoad = ins.points;
+      workingInWidths = ins.companion;
+    } else if (endRoad === "in") {
+      const ins = insertPointOnPolyline(inRoadPolyline, hitEndIn, inRoadWidths);
+      workingInRoad = ins.points;
+      workingInWidths = ins.companion;
+    }
+    if (startRoad === "out") {
+      workingOutRoad = insertPointOnPolyline(outRoadPolyline, hitStartOut).points;
+    } else if (endRoad === "out") {
+      workingOutRoad = insertPointOnPolyline(outRoadPolyline, hitEndOut).points;
+    }
     return {
       alleyPoints: newAlleyPoints,
-      inAtStart,
-      inCrossSection,
-      outCrossSection,
-      inRoadPolyline: inInsert.points,
-      inRoadWidths: inInsert.companion,
-      outRoadPolyline: outInsert.points,
-      inPoint: inHit.point,
-      outPoint: outHit.point,
+      startCrossSection,
+      endCrossSection,
+      inRoadPolyline: workingInRoad,
+      inRoadWidths: workingInWidths,
+      outRoadPolyline: workingOutRoad,
     };
   }
   // Waypoints 4-8 ("Alley One" through "Alley Four", plus "Offshoot
@@ -1557,9 +1612,8 @@
         alleysToDraw.push({
           points: snapped.alleyPoints,
           label: def.label,
-          inAtStart: snapped.inAtStart,
-          inCrossSection: snapped.inCrossSection,
-          outCrossSection: snapped.outCrossSection,
+          startCrossSection: snapped.startCrossSection,
+          endCrossSection: snapped.endCrossSection,
         });
       });
     }
@@ -1633,13 +1687,20 @@
       // ribbons only ever meet at a single point, leaving a real
       // triangular gap. See crossSectionAtHit's comment for the full
       // reasoning.
+      // A dead-end spur (e.g. Offshoot Alley) only got ONE end snapped --
+      // see ALLEY_MAX_SNAP_METERS above -- so the other cross-section is
+      // null here. Nothing to bridge there: that end was never forced
+      // onto a road, so it just keeps its own natural flat end cap,
+      // exactly like any other dead end.
       const alleyWidths = { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS };
-      const alleyStartEdge = ribbonEdgeAtEnd(alley.points, true, alleyWidths);
-      const alleyEndEdge = ribbonEdgeAtEnd(alley.points, false, alleyWidths);
-      const startCrossSection = alley.inAtStart ? alley.inCrossSection : alley.outCrossSection;
-      const endCrossSection = alley.inAtStart ? alley.outCrossSection : alley.inCrossSection;
-      fillRibbonJunction(alleyStartEdge, startCrossSection, entranceRoadFillLayer);
-      fillRibbonJunction(alleyEndEdge, endCrossSection, entranceRoadFillLayer);
+      if (alley.startCrossSection) {
+        const alleyStartEdge = ribbonEdgeAtEnd(alley.points, true, alleyWidths);
+        fillRibbonJunction(alleyStartEdge, alley.startCrossSection, entranceRoadFillLayer);
+      }
+      if (alley.endCrossSection) {
+        const alleyEndEdge = ribbonEdgeAtEnd(alley.points, false, alleyWidths);
+        fillRibbonJunction(alleyEndEdge, alley.endCrossSection, entranceRoadFillLayer);
+      }
     });
 
     // In Road's real far end and Out Road's real near end are two
