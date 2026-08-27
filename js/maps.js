@@ -85,7 +85,15 @@
   }
   async function refreshPathsForMap(mapId) {
     try {
-      const { data, error } = await sb.from("map_paths").select("*").eq("map_id", mapId);
+      // Ordered oldest-first -- this order is what gives each path its
+      // stable display number (1st created = "1", 2nd = "2", ...) and its
+      // color, both computed purely from position in this list (see
+      // PATH_COLORS/renderPermanentPaths below), not stored on the row.
+      const { data, error } = await sb
+        .from("map_paths")
+        .select("*")
+        .eq("map_id", mapId)
+        .order("created_at", { ascending: true });
       if (error || !data) return false;
       pathsCache[mapId] = data.map(mapPathRow);
       return true;
@@ -261,6 +269,78 @@
     const html =
       '<div class="dd-path-endpoint-badge' + kindClass + pendingClass + '" style="width:' + d + "px;height:" + d +
       "px;font-size:" + fontPx + 'px;">' + label + "</div>";
+    return L.divIcon({ html: html, className: "dd-path-div-icon", iconSize: [d, d], iconAnchor: [d / 2, d / 2] });
+  }
+
+  // --- Per-path numbering/coloring for SAVED waypoint chains ---
+  // Each saved path gets a stable number (1, 2, 3, ...) and a color, both
+  // computed purely from its position in the oldest-first list fetched by
+  // refreshPathsForMap -- nothing is stored on the row for this, so there's
+  // no schema/SQL change and no per-map setup to maintain. Numbers/colors
+  // are scoped per map (each property's paths are numbered independently)
+  // and shift if a path is deleted -- the ones after it move up by one,
+  // same as how pin numbers get reused, so there's never a gap.
+  //
+  // Colors are a fixed rotation of vivid, maximally-distinct hues (picked
+  // to stay readable against satellite imagery -- greens/tans/grays --
+  // rather than an app-UI palette), so a path never gets more than one
+  // fresh color as long as PATH_COLORS.length paths or fewer exist on that
+  // map; beyond that it cycles.
+  const PATH_COLORS = [
+    "#e6194b", // red
+    "#4363d8", // blue
+    "#f58231", // orange
+    "#3cb44b", // green
+    "#911eb4", // purple
+    "#f032e6", // magenta
+    "#42d4f4", // cyan
+    "#ffe119", // yellow
+    "#fabed4", // pink
+    "#000075", // navy
+  ];
+  function pathColorFor(index) {
+    return PATH_COLORS[index % PATH_COLORS.length];
+  }
+  function hexToRgb(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+  // A darker shade of the same hue for the End badge/mid dots, so within
+  // one path Start still reads slightly different from End at a glance --
+  // same idea as the old fixed teal/dark-teal pair, just per-path now.
+  function darkenHex(hex, amount) {
+    const { r, g, b } = hexToRgb(hex);
+    const f = 1 - amount;
+    const c = (v) => Math.max(0, Math.round(v * f));
+    return "#" + [c(r), c(g), c(b)].map((v) => v.toString(16).padStart(2, "0")).join("");
+  }
+  // Picks readable badge text (near-black or white) against a given
+  // background color, via standard relative-luminance contrast -- some of
+  // the palette above (yellow, pink) are too light for white text.
+  function contrastTextColor(hex) {
+    const { r, g, b } = hexToRgb(hex);
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return lum > 0.6 ? "#1a1a1a" : "#fff";
+  }
+
+  function makeSavedPathPointIcon(kind, number, color, scale) {
+    // kind: "start" | "end" | "mid"
+    scale = scale || 1;
+    const isEnd = kind === "end";
+    const dotColor = isEnd ? darkenHex(color, 0.28) : color;
+    if (kind === "mid") {
+      const d = Math.max(6, Math.round(PATH_MID_BASE_D * scale));
+      const html =
+        '<div class="dd-path-mid-dot" style="width:' + d + "px;height:" + d + "px;background:" + dotColor + ';"></div>';
+      return L.divIcon({ html: html, className: "dd-path-div-icon", iconSize: [d, d], iconAnchor: [d / 2, d / 2] });
+    }
+    const d = Math.max(13, Math.round(PATH_ENDPOINT_BASE_D * scale));
+    const fontPx = Math.max(8, Math.round(9 * scale));
+    const label = String(number) + (kind === "start" ? "S" : "E");
+    const textColor = contrastTextColor(dotColor);
+    const html =
+      '<div class="dd-path-endpoint-badge" style="width:' + d + "px;height:" + d + "px;font-size:" + fontPx +
+      "px;background:" + dotColor + ";color:" + textColor + ';">' + label + "</div>";
     return L.divIcon({ html: html, className: "dd-path-div-icon", iconSize: [d, d], iconAnchor: [d / 2, d / 2] });
   }
 
@@ -576,11 +656,13 @@
     const rec = getMapRecord(currentMapId);
     const scale = scaleForZoom(mapLeaflet);
     const pathsInteractive = setupModeOn;
-    rec.paths.forEach((path) => {
+    rec.paths.forEach((path, pathIndex) => {
       if (editingPathId === path.id) return;
+      const pathNumber = pathIndex + 1;
+      const pathColor = pathColorFor(pathIndex);
       const latlngs = path.points.map((p) => [p.lat, p.lng]);
       const line = L.polyline(latlngs, {
-        color: "#0aa3a3",
+        color: pathColor,
         weight: 4,
         dashArray: "8 8",
         opacity: 0.9,
@@ -596,7 +678,7 @@
       path.points.forEach((p, i) => {
         const kind = i === 0 ? "start" : i === path.points.length - 1 ? "end" : "mid";
         const marker = L.marker([p.lat, p.lng], {
-          icon: makePathPointIcon(kind, scale, false),
+          icon: makeSavedPathPointIcon(kind, pathNumber, pathColor, scale),
           interactive: pathsInteractive,
           keyboard: false,
         });
