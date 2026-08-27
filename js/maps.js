@@ -1272,6 +1272,42 @@
   function hasOutRoad(rec) {
     return currentMapId === "amazon" && !!rec.paths[2]?.points?.length && rec.paths[2].points.length >= 2;
   }
+  // Waypoints 9 and 10 are together "Rec Road" -- same idea as In Road
+  // (routes 1+2), two independently hand-placed stretches joined into one
+  // continuous road, but standalone: it isn't wired into the In/Out
+  // Road/alley junction system, and nothing crowds it, so it's a plain
+  // symmetric ribbon like Out Road rather than In Road's asymmetric one.
+  function hasRecRoad(rec) {
+    return (
+      currentMapId === "amazon" &&
+      !!rec.paths[8]?.points?.length &&
+      rec.paths[8].points.length >= 2 &&
+      !!rec.paths[9]?.points?.length &&
+      rec.paths[9].points.length >= 2
+    );
+  }
+  function getRecRoadCombinedRoute(rec) {
+    if (!hasRecRoad(rec)) return null;
+    return combinePointSequences(rec.paths[8].points, rec.paths[9].points);
+  }
+  // Draws into the SAME shared fill/labels layers as renderEntranceRoad
+  // (In Road/Out Road/alleys) -- those are really just "all textured
+  // roads on this map" layers by this point, not entrance-specific.
+  // Doesn't clear them itself; renderPermanentPaths calls this right
+  // after renderEntranceRoad, which already cleared+redrew everything
+  // else this cycle.
+  function renderRecRoad(rec) {
+    const combined = getRecRoadCombinedRoute(rec);
+    if (!combined) return;
+    drawTexturedRoad(combined, {
+      insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+      outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+      labelText: "REC ROAD",
+      startLabelText: null,
+      fillLayer: entranceRoadFillLayer,
+      labelsLayer: entranceRoadLabelsLayer,
+    });
+  }
   // Orients `points` so whichever of its two ends is closer to
   // `referencePoint` comes first (reversing the array if that's the LAST
   // point, not the first) -- used below to figure out which end of route
@@ -1599,12 +1635,14 @@
     const pathsInteractive = setupModeOn;
     const hideAsEntranceRoad = hasEntranceRoad(rec);
     const hideAsOutRoad = hasOutRoad(rec);
+    const hideAsRecRoad = hasRecRoad(rec);
     rec.paths.forEach((path, pathIndex) => {
       if (editingPathId === path.id) return;
       // Routes 1 and 2 are the entrance road, route 3 is the out road,
-      // and 4-7 are the alleys -- their dirt-road overlays (below) are
-      // their visual now, so normally skip their own colored line + S/E
-      // badges entirely rather than drawing both on top of each other.
+      // 4-8 are the alleys, and 9-10 are Rec Road -- their dirt-road
+      // overlays (below) are their visual now, so normally skip their
+      // own colored line + S/E badges entirely rather than drawing both
+      // on top of each other.
       //
       // BUT NOT in Setup Mode: this used to hide them unconditionally,
       // which meant once a path became part of a road overlay there was
@@ -1617,6 +1655,7 @@
         if (hideAsEntranceRoad && pathIndex < 2) return;
         if (hideAsOutRoad && pathIndex === 2) return;
         if (hasAlleyRoad(rec, pathIndex)) return;
+        if (hideAsRecRoad && (pathIndex === 8 || pathIndex === 9)) return;
       }
       const pathNumber = pathIndex + 1;
       const pathColor = pathColorFor(pathIndex);
@@ -1652,6 +1691,7 @@
       });
     });
     renderEntranceRoad(rec);
+    renderRecRoad(rec);
   }
   function rescaleAllPins() {
     if (!mapLeaflet) return;
