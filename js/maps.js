@@ -789,10 +789,10 @@
     options.sort((x, y) => x.d - y.d);
     return options[0].build();
   }
-  // The point a given fraction (0-1) of the way along a multi-point route,
-  // by cumulative distance -- used to space "IN ROAD" labels evenly along
-  // the combined entrance road regardless of how many points make it up.
-  function pointAtFraction(points, fraction) {
+  // Cumulative per-segment lengths (meters) along a multi-point route --
+  // shared by pointAtFraction and pointAndBearingAtDistance below so both
+  // walk the same segment table instead of recomputing it separately.
+  function routeSegLens(points) {
     const segLens = [];
     let total = 0;
     for (let i = 0; i < points.length - 1; i++) {
@@ -800,17 +800,44 @@
       segLens.push(d);
       total += d;
     }
-    let target = total * fraction;
+    return { segLens, total };
+  }
+  // The point AND local direction (as a CSS-rotate-ready degrees value) at
+  // a given absolute distance (meters, clamped to the route's length) along
+  // a multi-point route -- used to lay individual letters down flowing
+  // along the road, each one rotated to match the road's direction right
+  // where it sits, the way a road name painted on pavement (or a curved
+  // road label on a map) follows the road instead of sitting next to it
+  // as a flat block of text.
+  function pointAndBearingAtDistance(points, segLens, total, distance) {
+    const target = Math.max(0, Math.min(total, distance));
+    let remaining = target;
     for (let i = 0; i < segLens.length; i++) {
-      if (target <= segLens[i] || i === segLens.length - 1) {
-        const t = segLens[i] ? Math.min(1, target / segLens[i]) : 0;
+      const len = segLens[i];
+      if (remaining <= len || i === segLens.length - 1) {
+        const t = len ? Math.min(1, remaining / len) : 0;
         const a = points[i];
         const b = points[i + 1];
-        return { lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t };
+        const lat = a.lat + (b.lat - a.lat) * t;
+        const lng = a.lng + (b.lng - a.lng) * t;
+        const { latM, lngM } = metersPerDegreeAt(a.lat);
+        const dxM = (b.lng - a.lng) * lngM;
+        const dyM = (b.lat - a.lat) * latM; // +north
+        // Screen x = east, screen y = -north (screen y grows downward) --
+        // atan2(screenY, screenX) is then the CSS rotate() angle (degrees,
+        // clockwise) that points a horizontal glyph along this segment.
+        let angle = (Math.atan2(-dyM, dxM) * 180) / Math.PI;
+        // Keep text right-side-up (never upside down) by flipping any
+        // angle more than 90 degrees from horizontal back the other way --
+        // same trick real map renderers use for curved road labels.
+        if (angle > 90) angle -= 180;
+        else if (angle < -90) angle += 180;
+        return { lat, lng, angle };
       }
-      target -= segLens[i];
+      remaining -= len;
     }
-    return points[points.length - 1];
+    const last = points[points.length - 1];
+    return { lat: last.lat, lng: last.lng, angle: 0 };
   }
 
   // A procedural dirt/gravel texture (mottled tan, no external image) --
@@ -840,12 +867,45 @@
     document.body.appendChild(svg);
   }
 
-  function makeRoadLabelIcon(text) {
+  function makeEntranceLabelIcon(text) {
     return L.divIcon({
-      html: '<span class="dd-road-label">' + text + "</span>",
+      html: '<span class="dd-entrance-label">' + text + "</span>",
       className: "dd-path-div-icon",
       iconSize: null,
     });
+  }
+  // One rotated letter, positioned/angled to sit flush on the road at that
+  // exact point -- see pointAndBearingAtDistance above.
+  function makeFlowLetterIcon(char, angleDeg) {
+    return L.divIcon({
+      html:
+        '<span class="dd-road-flow-letter" style="transform: rotate(' +
+        angleDeg +
+        'deg)">' +
+        char +
+        "</span>",
+      className: "dd-path-div-icon",
+      iconSize: null,
+    });
+  }
+  // Lays `text` down letter-by-letter, centered on the given fraction of
+  // the route, each letter placed and rotated to follow the road's local
+  // direction right where it lands (spaces just advance the cursor with no
+  // glyph) -- so it reads like a road name painted on the road itself,
+  // not a block label floating beside it.
+  function renderFlowingRoadText(text, points, segLens, total, centerFraction, layer) {
+    const LETTER_SPACING_METERS = 2.6;
+    const centerDistance = total * centerFraction;
+    const startDistance = centerDistance - ((text.length - 1) * LETTER_SPACING_METERS) / 2;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === " ") continue;
+      const distance = startDistance + i * LETTER_SPACING_METERS;
+      const { lat, lng, angle } = pointAndBearingAtDistance(points, segLens, total, distance);
+      layer.addLayer(
+        L.marker([lat, lng], { icon: makeFlowLetterIcon(ch, angle), interactive: false, keyboard: false })
+      );
+    }
   }
 
   const ENTRANCE_ROAD_WIDTH_METERS = 3.5;
@@ -858,13 +918,19 @@
   // touching the underlying path data (routes 1/2 stay two separate,
   // independently-editable saved paths; this is a purely visual overlay
   // computed fresh from their current points every render).
+  // True when routes 1 and 2 on the current map are the pair the entrance
+  // road overlay draws over -- shared with renderPermanentPaths below so
+  // it can hide their own line/badges (Heath's call: the dirt road IS
+  // routes 1 and 2 now, no need for the numbered waypoint markers too).
+  function hasEntranceRoad(rec) {
+    return currentMapId === "amazon" && !!rec.paths[0]?.points?.length && !!rec.paths[1]?.points?.length;
+  }
   function renderEntranceRoad(rec) {
     entranceRoadFillLayer?.clearLayers();
     entranceRoadLabelsLayer?.clearLayers();
-    if (currentMapId !== "amazon" || rec.paths.length < 2) return;
+    if (!hasEntranceRoad(rec)) return;
     const path1 = rec.paths[0]; // oldest = display number 1
     const path2 = rec.paths[1]; // second-oldest = display number 2
-    if (!path1?.points?.length || !path2?.points?.length) return;
     ensureDirtPatternDefs();
 
     const combined = combinePointSequences(path1.points, path2.points);
@@ -880,21 +946,21 @@
     // "ENTRANCE" belongs at route 1's free end -- whichever endpoint of
     // route 1 did NOT get used to join onto route 2. combinePointSequences
     // always puts route 1 first in `combined` (reversed if needed so its
-    // free end leads), so combined[0] IS that free end.
-    const entranceLabelAt = offsetLatLng(combined[0], 0, 8); // 8m north ("just above")
+    // free end leads), so combined[0] IS that free end. Nudged a few
+    // meters west ("left") and in close to the road per Heath's feedback
+    // that it was landing barely at the actual entrance.
+    const entranceLabelAt = offsetLatLng(combined[0], -4, 6);
     entranceRoadLabelsLayer.addLayer(
       L.marker([entranceLabelAt.lat, entranceLabelAt.lng], {
-        icon: makeRoadLabelIcon("ENTRANCE"),
+        icon: makeEntranceLabelIcon("ENTRANCE"),
         interactive: false,
         keyboard: false,
       })
     );
 
+    const { segLens, total } = routeSegLens(combined);
     [0.25, 0.5, 0.75].forEach((frac) => {
-      const at = pointAtFraction(combined, frac);
-      entranceRoadLabelsLayer.addLayer(
-        L.marker([at.lat, at.lng], { icon: makeRoadLabelIcon("IN ROAD"), interactive: false, keyboard: false })
-      );
+      renderFlowingRoadText("IN ROAD", combined, segLens, total, frac, entranceRoadLabelsLayer);
     });
   }
 
@@ -904,8 +970,13 @@
     const rec = getMapRecord(currentMapId);
     const scale = scaleForZoom(mapLeaflet);
     const pathsInteractive = setupModeOn;
+    const hideAsEntranceRoad = hasEntranceRoad(rec);
     rec.paths.forEach((path, pathIndex) => {
       if (editingPathId === path.id) return;
+      // Routes 1 and 2 are the entrance road now -- its dirt-road overlay
+      // (below) is their visual, so skip their own colored line + S/E
+      // badges entirely rather than drawing both on top of each other.
+      if (hideAsEntranceRoad && pathIndex < 2) return;
       const pathNumber = pathIndex + 1;
       const pathColor = pathColorFor(pathIndex);
       const latlngs = path.points.map((p) => [p.lat, p.lng]);

@@ -289,9 +289,8 @@
 }
 
 /* === Entrance road overlay (Amazon Campground, routes 1+2 specifically) ===
-   Large, high-contrast text for "ENTRANCE"/"IN ROAD" -- meant to read at a
-   glance the way painted road signage does, not blend in like the path
-   badges do. */
+   Large, high-contrast text for "ENTRANCE" -- meant to read at a glance the
+   way painted road signage does, not blend in like the path badges do. */
 .dd-road-label {
   display: inline-block;
   color: #fff;
@@ -300,6 +299,28 @@
   letter-spacing: 0.05em;
   white-space: nowrap;
   text-shadow: 0 0 4px #000, 0 0 6px #000, 1px 1px 2px #000;
+}
+.dd-entrance-label {
+  display: inline-block;
+  color: #ffe600;
+  font-weight: 800;
+  font-size: 22px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  text-shadow: 0 0 4px #000, 0 0 6px #000, 1px 1px 2px #000;
+}
+/* "IN ROAD" is spelled out one letter per divIcon, each placed and rotated
+   to follow the road's local direction (like a road name painted on a map
+   or on the pavement itself), instead of one static block of text sitting
+   next to the road. */
+.dd-road-flow-letter {
+  display: block;
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+  line-height: 1;
+  text-align: center;
+  text-shadow: 0 0 3px #000, 0 0 4px #000, 1px 1px 1px #000;
 }
 
 /* === Pin marker (Leaflet divIcon contents) ===
