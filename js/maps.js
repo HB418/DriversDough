@@ -846,17 +846,24 @@
   // combination of corners is closer together (same trick used elsewhere
   // in this file, e.g. combinePointSequences) before filling the two
   // resulting wedge triangles.
-  function fillRibbonJunction(vertex, edgeA, edgeB, fillLayer) {
+  // Bridges two SEPARATE routes' real end caps with a plain quad (split
+  // into 2 triangles along a diagonal so it can never self-intersect,
+  // same reasoning as buildRibbonPieces' interior joints) -- no shared
+  // vertex assumed, since the two real endpoints these edges sit at can
+  // be a genuine gap apart. "left"/"right" don't necessarily correspond
+  // between two independently-oriented roads, so pick whichever pairing
+  // has the smaller total span (same trick as combinePointSequences).
+  function fillRibbonJunction(edgeA, edgeB, fillLayer) {
     const straight = metersBetween(edgeA.left, edgeB.left) + metersBetween(edgeA.right, edgeB.right);
     const crossed = metersBetween(edgeA.left, edgeB.right) + metersBetween(edgeA.right, edgeB.left);
-    const pairs =
-      straight <= crossed
-        ? [[edgeA.left, edgeB.left], [edgeA.right, edgeB.right]]
-        : [[edgeA.left, edgeB.right], [edgeA.right, edgeB.left]];
-    pairs.forEach(([p1, p2]) => {
+    const paired = straight <= crossed ? { left: edgeB.left, right: edgeB.right } : { left: edgeB.right, right: edgeB.left };
+    [
+      [edgeA.left, paired.left, paired.right],
+      [edgeA.left, paired.right, edgeA.right],
+    ].forEach((tri) => {
       fillLayer.addLayer(
         L.polygon(
-          [vertex, p1, p2].map((p) => [p.lat, p.lng]),
+          tri.map((p) => [p.lat, p.lng]),
           { stroke: false, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 1, interactive: false }
         )
       );
@@ -1394,23 +1401,20 @@
     let combined = getAmazonEntranceCombinedRoute(rec);
     let outRoadPoints = hasOutRoad(rec) ? rec.paths[2].points : null;
 
-    // Heath: "in road should connect to out road ... where it would
-    // juxtapose" -- route 2's far end and route 3's near end are two
-    // independently hand-placed waypoints, so they likely sit a couple
-    // meters apart rather than exactly coincident, which left a visible
-    // gap between the two ribbons. Snapping both to their shared midpoint
-    // makes them share an actual vertex, so the ribbons touch/overlap
-    // right at the real junction instead of stopping short of each other.
+    // Route 2's real final waypoint and route 3's real first waypoint are
+    // two independently hand-placed points -- this used to average them
+    // into a shared midpoint and DELETE both real points
+    // (`combined.slice(0, -1)` drops route 2's actual last point entirely).
+    // That's fine when the two are a couple meters apart, but when they're
+    // genuinely far apart (confirmed against a real screenshot: Setup Mode
+    // showed route 2's real end sitting well off to the side of where the
+    // rendered ribbon actually terminates, with the ribbon cutting straight
+    // to the fabricated midpoint instead of ever reaching the real point),
+    // it silently threw away real, meaningful road length. Both roads now
+    // keep their own real endpoints; fillRibbonJunction below bridges
+    // whatever visual gap is actually there without deleting any data.
     if (combined && outRoadPoints) {
       outRoadPoints = orientTowardPoint(outRoadPoints, combined[combined.length - 1]);
-      const entranceFarEnd = combined[combined.length - 1];
-      const outRoadNearEnd = outRoadPoints[0];
-      const junction = {
-        lat: (entranceFarEnd.lat + outRoadNearEnd.lat) / 2,
-        lng: (entranceFarEnd.lng + outRoadNearEnd.lng) / 2,
-      };
-      combined = combined.slice(0, -1).concat([junction]);
-      outRoadPoints = [junction].concat(outRoadPoints.slice(1));
     }
 
     // Alleys connect into the MIDDLE of In Road/Out Road, not just their
@@ -1490,15 +1494,16 @@
       });
     });
 
-    // In Road's far end and Out Road's near end are the same shared
-    // vertex (the junction snap above), but each road's own ribbon still
-    // gives it a flat end cap using that road's own width/direction --
-    // same wedge-filling idea as buildRibbonPieces' interior joints, just
-    // applied across the two separate roads instead of within one.
+    // In Road's real far end and Out Road's real near end are two
+    // independent points that may sit a real gap apart (see above -- no
+    // longer forced together into a shared midpoint). Bridge that gap
+    // using each road's own real end cap, same wedge-filling idea as
+    // buildRibbonPieces' interior joints, just applied across two
+    // separate roads instead of within one.
     if (combined && outRoadPoints) {
       const entranceEdge = ribbonEdgeAtEnd(combined, false, ENTRANCE_ROAD_INSIDE_METERS, ENTRANCE_ROAD_OUTSIDE_METERS);
       const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, OUT_ROAD_HALF_WIDTH_METERS, OUT_ROAD_HALF_WIDTH_METERS);
-      fillRibbonJunction(combined[combined.length - 1], entranceEdge, outRoadEdge, entranceRoadFillLayer);
+      fillRibbonJunction(entranceEdge, outRoadEdge, entranceRoadFillLayer);
     }
   }
 
