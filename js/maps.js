@@ -1000,6 +1000,13 @@
   const ENTRANCE_ROAD_INSIDE_METERS = 1.75; // left -- unchanged, don't grow toward buildings
   const ENTRANCE_ROAD_OUTSIDE_METERS = 4.25; // right -- all the added width lives here
 
+  // Waypoint 3 ("Out Road") has no building crowding it the way the
+  // entrance road does, so no need for the asymmetric-widening dance --
+  // just a plain thicker ribbon, evenly split and centered directly on
+  // the saved path (matches the entrance road's total 6m girth so the
+  // two roads read as the same kind of thing).
+  const OUT_ROAD_HALF_WIDTH_METERS = 3.0;
+
   // Amazon Campground specific: waypoint routes 1 and 2 are one continuous
   // real dirt road (per Heath) that just got drawn as two separate
   // waypoint chains -- this renders them as a single textured road with
@@ -1047,48 +1054,90 @@
       return offsetLatLng(p, -nx * offsetMeters, -ny * offsetMeters);
     });
   }
-  function renderEntranceRoad(rec) {
-    entranceRoadFillLayer?.clearLayers();
-    entranceRoadLabelsLayer?.clearLayers();
-    const combined = getAmazonEntranceCombinedRoute(rec);
-    if (!combined) return;
+  // Shared by the entrance road (routes 1+2, asymmetric) and the out road
+  // (route 3, symmetric) below -- draws the textured ribbon plus its
+  // repeated flowing label, and an optional single start label (only the
+  // entrance road uses that part). Doesn't touch/clear any layers itself;
+  // callers own that (both draw into the same shared fill/labels layers).
+  function drawTexturedRoad(points, opts) {
     ensureDirtPatternDefs();
-
-    const ribbon = bufferLineToRibbon(combined, ENTRANCE_ROAD_INSIDE_METERS, ENTRANCE_ROAD_OUTSIDE_METERS);
+    const insideMeters = opts.insideMeters;
+    const outsideMeters = opts.outsideMeters;
+    const ribbon = bufferLineToRibbon(points, insideMeters, outsideMeters);
     if (ribbon.length) {
       const ribbonPoly = L.polygon(
         ribbon.map((p) => [p.lat, p.lng]),
         { color: "#6b4a2f", weight: 1, opacity: 0.5, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 0.95, interactive: false }
       );
-      entranceRoadFillLayer.addLayer(ribbonPoly);
+      opts.fillLayer.addLayer(ribbonPoly);
     }
 
-    // The ribbon's real visual middle, now that it's wider on the outside
-    // than the inside -- everything text-related below anchors to this,
-    // not the raw route points, so it sits centered on the road as drawn
-    // rather than drifting toward the inside edge.
-    const centerline = offsetPolylinePerpendicular(combined, ROAD_VISUAL_CENTER_OFFSET_METERS);
+    // The ribbon's real visual middle -- for a symmetric width (inside ==
+    // outside, e.g. the out road) this offset is 0 and centerline is just
+    // `points` back again; for an asymmetric one (the entrance road) it's
+    // shifted toward the wider/outside edge so labels sit centered on the
+    // road as actually drawn rather than drifting toward the inside edge.
+    const centerOffset = (outsideMeters - insideMeters) / 2;
+    const centerline = offsetPolylinePerpendicular(points, centerOffset);
 
-    // "ENTRANCE" belongs at route 1's free end -- whichever endpoint of
-    // route 1 did NOT get used to join onto route 2. combinePointSequences
-    // always puts route 1 first in `combined` (reversed if needed so its
-    // free end leads), so centerline[0] IS that free end. Nudged west
-    // ("left") and further north per Heath's feedback on earlier rounds.
-    const entranceLabelAt = offsetLatLng(centerline[0], -4, 14);
-    entranceRoadLabelsLayer.addLayer(
-      L.marker([entranceLabelAt.lat, entranceLabelAt.lng], {
-        icon: makeEntranceLabelIcon("ENTRANCE"),
-        interactive: false,
-        keyboard: false,
-      })
-    );
+    if (opts.startLabelText) {
+      const startLabelAt = offsetLatLng(centerline[0], opts.startLabelOffset[0], opts.startLabelOffset[1]);
+      opts.labelsLayer.addLayer(
+        L.marker([startLabelAt.lat, startLabelAt.lng], {
+          icon: makeEntranceLabelIcon(opts.startLabelText),
+          interactive: false,
+          keyboard: false,
+        })
+      );
+    }
 
     const { segLens, total } = routeSegLens(centerline);
     const scale = scaleForZoom(mapLeaflet);
     const flip = overallRouteFlip(centerline);
     [0.25, 0.5, 0.75].forEach((frac) => {
-      renderFlowingRoadText("IN ROAD", centerline, segLens, total, frac, entranceRoadLabelsLayer, scale, flip);
+      renderFlowingRoadText(opts.labelText, centerline, segLens, total, frac, opts.labelsLayer, scale, flip);
     });
+  }
+  // Amazon Campground specific: waypoint 3 ("Orange road") gets the same
+  // textured-road treatment as the entrance road, just as its own single
+  // route (no joining needed) and labeled "OUT ROAD" -- per Heath, no
+  // building crowds it so the ribbon is a plain symmetric widen-and-center
+  // rather than the entrance road's asymmetric one.
+  function hasOutRoad(rec) {
+    return currentMapId === "amazon" && !!rec.paths[2]?.points?.length && rec.paths[2].points.length >= 2;
+  }
+  function renderEntranceRoad(rec) {
+    entranceRoadFillLayer?.clearLayers();
+    entranceRoadLabelsLayer?.clearLayers();
+
+    const combined = getAmazonEntranceCombinedRoute(rec);
+    if (combined) {
+      // "ENTRANCE" belongs at route 1's free end -- whichever endpoint of
+      // route 1 did NOT get used to join onto route 2. combinePointSequences
+      // always puts route 1 first in `combined` (reversed if needed so its
+      // free end leads), so centerline[0] IS that free end. Nudged west
+      // ("left") and further north per Heath's feedback on earlier rounds.
+      drawTexturedRoad(combined, {
+        insideMeters: ENTRANCE_ROAD_INSIDE_METERS,
+        outsideMeters: ENTRANCE_ROAD_OUTSIDE_METERS,
+        labelText: "IN ROAD",
+        startLabelText: "ENTRANCE",
+        startLabelOffset: [-4, 14],
+        fillLayer: entranceRoadFillLayer,
+        labelsLayer: entranceRoadLabelsLayer,
+      });
+    }
+
+    if (hasOutRoad(rec)) {
+      drawTexturedRoad(rec.paths[2].points, {
+        insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+        outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+        labelText: "OUT ROAD",
+        startLabelText: null,
+        fillLayer: entranceRoadFillLayer,
+        labelsLayer: entranceRoadLabelsLayer,
+      });
+    }
   }
 
   function renderPermanentPaths() {
@@ -1098,12 +1147,15 @@
     const scale = scaleForZoom(mapLeaflet);
     const pathsInteractive = setupModeOn;
     const hideAsEntranceRoad = hasEntranceRoad(rec);
+    const hideAsOutRoad = hasOutRoad(rec);
     rec.paths.forEach((path, pathIndex) => {
       if (editingPathId === path.id) return;
-      // Routes 1 and 2 are the entrance road now -- its dirt-road overlay
-      // (below) is their visual, so skip their own colored line + S/E
-      // badges entirely rather than drawing both on top of each other.
+      // Routes 1 and 2 are the entrance road, route 3 is the out road --
+      // their dirt-road overlays (below) are their visual now, so skip
+      // their own colored line + S/E badges entirely rather than drawing
+      // both on top of each other.
       if (hideAsEntranceRoad && pathIndex < 2) return;
+      if (hideAsOutRoad && pathIndex === 2) return;
       const pathNumber = pathIndex + 1;
       const pathColor = pathColorFor(pathIndex);
       const latlngs = path.points.map((p) => [p.lat, p.lng]);
