@@ -800,10 +800,24 @@
   // averaged direction, can't produce that self-crossing regardless of
   // how sharp the turn is; the per-vertex fan triangle then closes the
   // gap between adjacent segments' quads without reintroducing it.
+  // Normalizes a "widths" argument to one {left,right} object per point --
+  // either a single {left,right} (broadcast to every point, the common
+  // case for a uniform-width road like Out Road or an alley) or an
+  // already-per-point array (In Road, see below: route 1 stays asymmetric
+  // near the buildings while route 2 is centered, so its width actually
+  // changes partway along the route).
+  function widthsForPoints(points, widths) {
+    return Array.isArray(widths) ? widths : points.map(() => widths);
+  }
   // One segment's own left/right cross-section at both of its endpoints
   // -- the shared building block for buildRibbonPieces (below) and for
-  // stitching two separate roads together at fillRibbonJunction.
-  function segmentQuad(a, b, leftWidthMeters, rightWidthMeters) {
+  // stitching two separate roads together at fillRibbonJunction. `a` and
+  // `b` can each carry their OWN width (rather than one width for the
+  // whole segment), so a segment that straddles a width change (e.g.
+  // where In Road's asymmetric route 1 meets its centered route 2) comes
+  // out as a smooth trapezoid blending from one width to the other,
+  // instead of an abrupt jump.
+  function segmentQuad(a, aWidth, b, bWidth) {
     const { latM, lngM } = metersPerDegreeAt(a.lat);
     const dxM = (b.lng - a.lng) * lngM;
     const dyM = (b.lat - a.lat) * latM;
@@ -811,18 +825,19 @@
     const nx = -dyM / len;
     const ny = dxM / len;
     return {
-      aLeft: offsetLatLng(a, nx * leftWidthMeters, ny * leftWidthMeters),
-      aRight: offsetLatLng(a, -nx * rightWidthMeters, -ny * rightWidthMeters),
-      bLeft: offsetLatLng(b, nx * leftWidthMeters, ny * leftWidthMeters),
-      bRight: offsetLatLng(b, -nx * rightWidthMeters, -ny * rightWidthMeters),
+      aLeft: offsetLatLng(a, nx * aWidth.left, ny * aWidth.left),
+      aRight: offsetLatLng(a, -nx * aWidth.right, -ny * aWidth.right),
+      bLeft: offsetLatLng(b, nx * bWidth.left, ny * bWidth.left),
+      bRight: offsetLatLng(b, -nx * bWidth.right, -ny * bWidth.right),
     };
   }
-  function buildRibbonPieces(points, leftWidthMeters, rightWidthMeters) {
+  function buildRibbonPieces(points, widths) {
     if (points.length < 2) return [];
+    const w = widthsForPoints(points, widths);
     const quads = [];
     const pieces = [];
     for (let i = 0; i < points.length - 1; i++) {
-      const quad = segmentQuad(points[i], points[i + 1], leftWidthMeters, rightWidthMeters);
+      const quad = segmentQuad(points[i], w[i], points[i + 1], w[i + 1]);
       quads.push(quad);
       pieces.push([quad.aLeft, quad.bLeft, quad.bRight, quad.aRight]);
     }
@@ -833,6 +848,9 @@
       // Each triangle is anchored at the real shared vertex with its
       // other two corners at most one width-length away -- always a
       // simple triangle, never self-intersecting, whatever the angle.
+      // prev.bLeft/bRight and cur.aLeft/aRight are both computed from
+      // this same vertex's own width (w[i]), so they already line up
+      // exactly -- no seam even where the width itself is changing here.
       pieces.push([vertex, prev.bLeft, cur.aLeft]);
       pieces.push([vertex, prev.bRight, cur.aRight]);
     }
@@ -874,11 +892,17 @@
   // (or bLeft/bRight) corners of that route's own outermost segmentQuad,
   // so this lines up exactly with what buildRibbonPieces actually drew
   // there. For handing to fillRibbonJunction above.
-  function ribbonEdgeAtEnd(points, atStart, leftWidthMeters, rightWidthMeters) {
-    const quad = atStart
-      ? segmentQuad(points[0], points[Math.min(1, points.length - 1)], leftWidthMeters, rightWidthMeters)
-      : segmentQuad(points[points.length - 2] ?? points[points.length - 1], points[points.length - 1], leftWidthMeters, rightWidthMeters);
-    return atStart ? { left: quad.aLeft, right: quad.aRight } : { left: quad.bLeft, right: quad.bRight };
+  function ribbonEdgeAtEnd(points, atStart, widths) {
+    const w = widthsForPoints(points, widths);
+    if (atStart) {
+      const bIdx = Math.min(1, points.length - 1);
+      const quad = segmentQuad(points[0], w[0], points[bIdx], w[bIdx]);
+      return { left: quad.aLeft, right: quad.aRight };
+    }
+    const aIdx = points.length - 2 >= 0 ? points.length - 2 : points.length - 1;
+    const bIdx = points.length - 1;
+    const quad = segmentQuad(points[aIdx], w[aIdx], points[bIdx], w[bIdx]);
+    return { left: quad.bLeft, right: quad.bRight };
   }
   // Joins two point sequences end-to-end, auto-detecting which pair of
   // endpoints is actually adjacent (and reversing either sequence as
@@ -1129,19 +1153,19 @@
     if (!hasEntranceRoad(rec)) return null;
     return combinePointSequences(rec.paths[0].points, rec.paths[1].points);
   }
-  // How far the ribbon's true visual middle sits from the original
-  // route's points, now that the two sides are asymmetric (see the width
-  // constants above) -- half the difference, offset toward the outside
-  // (right) side. Text anchored to the raw route points would sit off
-  // toward the inside edge instead of the middle of the now-wider road.
-  const ROAD_VISUAL_CENTER_OFFSET_METERS = (ENTRANCE_ROAD_OUTSIDE_METERS - ENTRANCE_ROAD_INSIDE_METERS) / 2;
   // Shifts every point of a route perpendicular to its own local
   // direction, toward the "outside"/right side (same sign convention as
-  // bufferLineToRibbon's `right` -- see that function's comment) -- used
-  // to turn the raw route into the ribbon's actual visual centerline.
+  // segmentQuad's `right`) -- used to turn the raw route into the
+  // ribbon's actual visual centerline. `offsetMeters` can be a single
+  // number (uniform, e.g. Out Road/alleys where it's just 0) or one
+  // number per point (In Road, whose width -- and so its true middle --
+  // changes partway along the route).
   function offsetPolylinePerpendicular(points, offsetMeters) {
     if (!offsetMeters) return points;
+    const offsets = Array.isArray(offsetMeters) ? offsetMeters : points.map(() => offsetMeters);
     return points.map((p, i) => {
+      const off = offsets[i];
+      if (!off) return p;
       const prev = points[i - 1] || points[i];
       const next = points[i + 1] || points[i];
       const { latM, lngM } = metersPerDegreeAt(p.lat);
@@ -1150,7 +1174,7 @@
       const len = Math.sqrt(dxM * dxM + dyM * dyM) || 1;
       const nx = -dyM / len;
       const ny = dxM / len;
-      return offsetLatLng(p, -nx * offsetMeters, -ny * offsetMeters);
+      return offsetLatLng(p, -nx * off, -ny * off);
     });
   }
   // Shared by the entrance road (routes 1+2, asymmetric) and the out road
@@ -1160,8 +1184,12 @@
   // callers own that (both draw into the same shared fill/labels layers).
   function drawTexturedRoad(points, opts) {
     ensureDirtPatternDefs();
-    const insideMeters = opts.insideMeters;
-    const outsideMeters = opts.outsideMeters;
+    // Either a single {left,right} for a uniform-width road (Out Road,
+    // alleys) or one {left,right} per point when the width itself changes
+    // along the route (In Road: route 1 stays asymmetric near the
+    // buildings, route 2 is centered -- see renderEntranceRoad).
+    const widths = opts.widths || { left: opts.insideMeters, right: opts.outsideMeters };
+    const widthAt = widthsForPoints(points, widths);
     // No stroke on any of these -- every road segment (In Road, Out Road,
     // each alley) is built from several small polygons (see
     // buildRibbonPieces) that only share vertices with their neighbors,
@@ -1173,7 +1201,7 @@
     // on top of that. Dropping the stroke entirely removes the seam
     // lines; the matching dirt-pattern fill on both sides of a shared
     // edge already reads as one continuous road with no border to draw.
-    buildRibbonPieces(points, insideMeters, outsideMeters).forEach((piece) => {
+    buildRibbonPieces(points, widthAt).forEach((piece) => {
       opts.fillLayer.addLayer(
         L.polygon(
           piece.map((p) => [p.lat, p.lng]),
@@ -1184,10 +1212,11 @@
 
     // The ribbon's real visual middle -- for a symmetric width (inside ==
     // outside, e.g. the out road) this offset is 0 and centerline is just
-    // `points` back again; for an asymmetric one (the entrance road) it's
+    // `points` back again; for an asymmetric one (In Road's route 1) it's
     // shifted toward the wider/outside edge so labels sit centered on the
     // road as actually drawn rather than drifting toward the inside edge.
-    const centerOffset = (outsideMeters - insideMeters) / 2;
+    // Per-point since the width itself can vary along the route.
+    const centerOffset = widthAt.map((w) => (w.right - w.left) / 2);
     const centerline = offsetPolylinePerpendicular(points, centerOffset);
 
     if (opts.startLabelText) {
@@ -1217,16 +1246,23 @@
   // makes bufferLineToRibbon's per-vertex tangent (computed from the
   // points on either side) numerically unstable, which can show up as an
   // erratic kink or pinch in the ribbon right at that spot.
-  function dedupeAdjacentPoints(points, minMeters) {
-    if (points.length <= 2) return points;
+  // `companion` (optional), when given, is a same-length parallel array
+  // (e.g. per-point widths) kept in sync -- whatever index gets dropped
+  // from `points` is dropped from `companion` too, so the two never fall
+  // out of alignment.
+  function dedupeAdjacentPoints(points, minMeters, companion) {
+    if (points.length <= 2) return companion ? { points, companion } : points;
     const result = [points[0]];
+    const resultCompanion = companion ? [companion[0]] : null;
     for (let i = 1; i < points.length - 1; i++) {
       if (metersBetween(result[result.length - 1], points[i]) >= minMeters) {
         result.push(points[i]);
+        if (resultCompanion) resultCompanion.push(companion[i]);
       }
     }
     result.push(points[points.length - 1]);
-    return result;
+    if (resultCompanion) resultCompanion.push(companion[companion.length - 1]);
+    return companion ? { points: result, companion: resultCompanion } : result;
   }
   // Amazon Campground specific: waypoint 3 ("Orange road") gets the same
   // textured-road treatment as the entrance road, just as its own single
@@ -1313,11 +1349,27 @@
   // or end of its segment), so a connection near a road's own endpoint
   // doesn't leave a redundant near-duplicate point sitting right next to
   // it.
-  function insertPointOnPolyline(points, hit) {
-    if (hit.t <= 0.001 || hit.t >= 0.999) return points;
+  // `companion` (optional): a same-length parallel array (e.g. per-point
+  // widths) that gets the interpolated value at the hit's own position
+  // (`t` along its segment) spliced in at the same index as the new
+  // point, so a road whose width changes along its length (In Road)
+  // keeps a sane width at an alley's inserted junction vertex too,
+  // instead of losing track of which "zone" that new point is in.
+  function insertPointOnPolyline(points, hit, companion) {
+    if (hit.t <= 0.001 || hit.t >= 0.999) return { points, companion };
     const copy = points.slice();
     copy.splice(hit.segmentIndex + 1, 0, hit.point);
-    return copy;
+    let companionCopy = companion;
+    if (companion) {
+      const a = companion[hit.segmentIndex];
+      const b = companion[hit.segmentIndex + 1];
+      companionCopy = companion.slice();
+      companionCopy.splice(hit.segmentIndex + 1, 0, {
+        left: a.left + (b.left - a.left) * hit.t,
+        right: a.right + (b.right - a.right) * hit.t,
+      });
+    }
+    return { points: copy, companion: companionCopy };
   }
   // Snaps one alley's two ends onto whichever of In Road/Out Road each is
   // actually closest to (never assuming the alley's own Start is the
@@ -1329,7 +1381,7 @@
   // alley + updated in/out road polylines; callers thread the updated
   // road polylines into the next alley so multiple alleys on the same
   // road all end up as real vertices on it.
-  function snapAlleyToRoads(alleyPoints, inRoadPolyline, outRoadPolyline) {
+  function snapAlleyToRoads(alleyPoints, inRoadPolyline, outRoadPolyline, inRoadWidths) {
     const start = alleyPoints[0];
     const end = alleyPoints[alleyPoints.length - 1];
     const hitStartIn = closestPointOnPolyline(inRoadPolyline, start, ALLEY_JUNCTION_GUARD_METERS);
@@ -1354,10 +1406,13 @@
       newAlleyPoints[newAlleyPoints.length - 1] = inHit.point;
       newAlleyPoints[0] = outHit.point;
     }
+    const inInsert = insertPointOnPolyline(inRoadPolyline, inHit, inRoadWidths);
+    const outInsert = insertPointOnPolyline(outRoadPolyline, outHit);
     return {
       alleyPoints: newAlleyPoints,
-      inRoadPolyline: insertPointOnPolyline(inRoadPolyline, inHit),
-      outRoadPolyline: insertPointOnPolyline(outRoadPolyline, outHit),
+      inRoadPolyline: inInsert.points,
+      inRoadWidths: inInsert.companion,
+      outRoadPolyline: outInsert.points,
       inPoint: inHit.point,
       outPoint: outHit.point,
     };
@@ -1401,6 +1456,29 @@
     let combined = getAmazonEntranceCombinedRoute(rec);
     let outRoadPoints = hasOutRoad(rec) ? rec.paths[2].points : null;
 
+    // In Road's width isn't uniform along its whole length: route 1 (the
+    // stretch nearest ENTRANCE) stays asymmetric to avoid the buildings
+    // that crowd its left side, but route 2 has nothing crowding it --
+    // Heath: it needs to be "a centered line like the others" (Out Road,
+    // the alleys), same total width, just centered on the real waypoints
+    // instead of pushed to one side. Before this, the whole combined
+    // route drew with route 1's asymmetric width end to end, which left
+    // real dirt-road pavement along route 2 sitting outside the ribbon on
+    // one side and short of it on the other. combinePointSequences always
+    // puts route 1 first (see its own comment), so the first N1 points of
+    // `combined` are route 1 and the rest are route 2 -- this stays true
+    // through every reversal option it can pick, just not through the
+    // alley-insertion/dedupe steps below, which thread this array (as
+    // `combinedWidths`) alongside `combined` to keep every point's width
+    // lined up with the point itself.
+    let combinedWidths = combined
+      ? combined.map((_, i) =>
+          i < rec.paths[0].points.length
+            ? { left: ENTRANCE_ROAD_INSIDE_METERS, right: ENTRANCE_ROAD_OUTSIDE_METERS }
+            : { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS }
+        )
+      : null;
+
     // Route 2's real final waypoint and route 3's real first waypoint are
     // two independently hand-placed points -- this used to average them
     // into a shared midpoint and DELETE both real points
@@ -1429,8 +1507,9 @@
     if (combined && outRoadPoints) {
       ALLEY_DEFS.forEach((def) => {
         if (!hasAlleyRoad(rec, def.pathIndex)) return;
-        const snapped = snapAlleyToRoads(rec.paths[def.pathIndex].points, combined, outRoadPoints);
+        const snapped = snapAlleyToRoads(rec.paths[def.pathIndex].points, combined, outRoadPoints, combinedWidths);
         combined = snapped.inRoadPolyline;
+        combinedWidths = snapped.inRoadWidths;
         outRoadPoints = snapped.outRoadPolyline;
         alleysToDraw.push({ points: snapped.alleyPoints, label: def.label });
       });
@@ -1445,7 +1524,11 @@
     // built, keeps every road's own start/end intact (dedupeAdjacentPoints
     // never touches the first/last point).
     const DEDUPE_MIN_METERS = 0.5;
-    if (combined) combined = dedupeAdjacentPoints(combined, DEDUPE_MIN_METERS);
+    if (combined) {
+      const deduped = dedupeAdjacentPoints(combined, DEDUPE_MIN_METERS, combinedWidths);
+      combined = deduped.points;
+      combinedWidths = deduped.companion;
+    }
     if (outRoadPoints) outRoadPoints = dedupeAdjacentPoints(outRoadPoints, DEDUPE_MIN_METERS);
     alleysToDraw.forEach((alley) => {
       alley.points = dedupeAdjacentPoints(alley.points, DEDUPE_MIN_METERS);
@@ -1461,8 +1544,7 @@
       // points, never replacing index 0, so this stays the true free end
       // regardless of how many alleys touched this road.
       drawTexturedRoad(combined, {
-        insideMeters: ENTRANCE_ROAD_INSIDE_METERS,
-        outsideMeters: ENTRANCE_ROAD_OUTSIDE_METERS,
+        widths: combinedWidths,
         labelText: "IN ROAD",
         startLabelText: "ENTRANCE",
         startLabelOffset: [-4, 14],
@@ -1501,8 +1583,8 @@
     // buildRibbonPieces' interior joints, just applied across two
     // separate roads instead of within one.
     if (combined && outRoadPoints) {
-      const entranceEdge = ribbonEdgeAtEnd(combined, false, ENTRANCE_ROAD_INSIDE_METERS, ENTRANCE_ROAD_OUTSIDE_METERS);
-      const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, OUT_ROAD_HALF_WIDTH_METERS, OUT_ROAD_HALF_WIDTH_METERS);
+      const entranceEdge = ribbonEdgeAtEnd(combined, false, combinedWidths);
+      const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS });
       fillRibbonJunction(entranceEdge, outRoadEdge, entranceRoadFillLayer);
     }
   }
