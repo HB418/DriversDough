@@ -911,10 +911,12 @@
   // functions compose right-to-left against the element's own box), so it
   // spins in place around where it's actually sitting rather than around
   // its top-left corner.
-  function makeFlowLetterIcon(char, angleDeg) {
+  function makeFlowLetterIcon(char, angleDeg, fontPx) {
     return L.divIcon({
       html:
-        '<span class="dd-road-flow-letter" style="transform: translate(-50%, -50%) rotate(' +
+        '<span class="dd-road-flow-letter" style="font-size:' +
+        fontPx +
+        'px; transform: translate(-50%, -50%) rotate(' +
         angleDeg +
         'deg)">' +
         char +
@@ -923,6 +925,15 @@
       iconSize: null,
     });
   }
+  // Base tuning below is "at zoom 19" (ICON_BASE_ZOOM, see scaleForZoom) --
+  // both get scaled from there the same way pin/path badges already are,
+  // so the letters stay legible instead of squishing together as the real
+  // ground-meter gap between them shrinks in pixel terms at a more zoomed
+  // out view. First tuning (2.6m/14px) read as "blocky and squished
+  // together" per Heath's feedback -- letters were only ~12px apart
+  // center-to-center at zoom 19, barely more than their own glyph width.
+  const FLOW_LETTER_BASE_SPACING_METERS = 4.2;
+  const FLOW_LETTER_BASE_FONT_PX = 13;
   // Lays `text` down letter-by-letter, centered on the given fraction of
   // the route, each letter placed and angled to follow the road's local
   // direction right where it lands (spaces just advance the cursor with no
@@ -939,20 +950,30 @@
   // needed, both the letter order and each letter's own angle get flipped
   // together, so the word stays readable instead of just going upside
   // down in place.
-  function renderFlowingRoadText(text, points, segLens, total, centerFraction, layer) {
-    const LETTER_SPACING_METERS = 2.6;
+  function renderFlowingRoadText(text, points, segLens, total, centerFraction, layer, scale) {
+    // Ground-meter spacing grows as the view zooms out (scale shrinks) so
+    // the on-screen gap between letters stays roughly constant instead of
+    // collapsing -- the opposite direction from font size below, which
+    // shrinks in step with the map's own content like every other badge
+    // in this file.
+    const letterSpacingMeters = FLOW_LETTER_BASE_SPACING_METERS / scale;
+    const fontPx = Math.max(9, Math.round(FLOW_LETTER_BASE_FONT_PX * scale));
     const centerDistance = total * centerFraction;
-    const startDistance = centerDistance - ((text.length - 1) * LETTER_SPACING_METERS) / 2;
+    const startDistance = centerDistance - ((text.length - 1) * letterSpacingMeters) / 2;
     const centerAngle = pointAndBearingAtDistance(points, segLens, total, centerDistance).angle;
     const flip = centerAngle > 90 || centerAngle < -90;
     for (let i = 0; i < text.length; i++) {
       const ch = flip ? text[text.length - 1 - i] : text[i];
       if (ch === " ") continue;
-      const distance = startDistance + i * LETTER_SPACING_METERS;
+      const distance = startDistance + i * letterSpacingMeters;
       const { lat, lng, angle } = pointAndBearingAtDistance(points, segLens, total, distance);
       const finalAngle = flip ? angle + 180 : angle;
       layer.addLayer(
-        L.marker([lat, lng], { icon: makeFlowLetterIcon(ch, finalAngle), interactive: false, keyboard: false })
+        L.marker([lat, lng], {
+          icon: makeFlowLetterIcon(ch, finalAngle, fontPx),
+          interactive: false,
+          keyboard: false,
+        })
       );
     }
   }
@@ -1052,8 +1073,9 @@
     );
 
     const { segLens, total } = routeSegLens(centerline);
+    const scale = scaleForZoom(mapLeaflet);
     [0.25, 0.5, 0.75].forEach((frac) => {
-      renderFlowingRoadText("IN ROAD", centerline, segLens, total, frac, entranceRoadLabelsLayer);
+      renderFlowingRoadText("IN ROAD", centerline, segLens, total, frac, entranceRoadLabelsLayer, scale);
     });
   }
 

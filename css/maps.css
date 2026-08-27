@@ -312,12 +312,14 @@
 /* "IN ROAD" is spelled out one letter per divIcon, each placed and rotated
    to follow the road's local direction (like a road name painted on a map
    or on the pavement itself), instead of one static block of text sitting
-   next to the road. */
+   next to the road. font-size is set inline per-letter (scales with zoom,
+   see renderFlowingRoadText in js/maps.js) -- font-weight dropped from 800
+   to 700 since the extra-bold weight was part of what read as "blocky"
+   at the letters' small size, on top of them being spaced too tight. */
 .dd-road-flow-letter {
   display: block;
   color: #fff;
-  font-weight: 800;
-  font-size: 14px;
+  font-weight: 700;
   line-height: 1;
   text-align: center;
   text-shadow: 0 0 3px #000, 0 0 4px #000, 1px 1px 1px #000;
