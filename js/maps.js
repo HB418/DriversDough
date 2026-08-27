@@ -1417,28 +1417,30 @@
       outPoint: outHit.point,
     };
   }
-  // Waypoints 4-7 ("Alley One" through "Alley Four") -- each one a short
-  // connector between In Road and Out Road, same width as Out Road (no
-  // building crowds these either, per Heath). Only rendered once BOTH
-  // In Road and Out Road exist, since an alley's whole purpose is
-  // bridging the two -- a floating unconnected "alley" wouldn't read as
-  // one.
+  // Waypoints 4-8 ("Alley One" through "Alley Four", plus "Offshoot
+  // Alley") -- each one a short connector between In Road and Out Road,
+  // same width as Out Road (no building crowds these either, per Heath).
+  // Only rendered once BOTH In Road and Out Road exist, since an alley's
+  // whole purpose is bridging the two -- a floating unconnected "alley"
+  // wouldn't read as one.
   const ALLEY_DEFS = [
     { pathIndex: 3, label: "ALLEY ONE" },
     { pathIndex: 4, label: "ALLEY TWO" },
     { pathIndex: 5, label: "ALLEY THREE" },
     { pathIndex: 6, label: "ALLEY FOUR" },
+    { pathIndex: 7, label: "OFFSHOOT ALLEY" },
   ];
-  // NOTE: must only match the 4 actual alley slots (3-6) -- this is used
-  // both to decide which paths get drawn as an alley road AND (in
-  // renderPermanentPaths) to decide which paths get their normal
+  // NOTE: must only match ALLEY_DEFS's own alley slots (currently 3-7) --
+  // this is used both to decide which paths get drawn as an alley road
+  // AND (in renderPermanentPaths) to decide which paths get their normal
   // line+badges HIDDEN. Earlier this only checked "does this pathIndex
-  // have >=2 points", which matched ANY waypoint route past index 6 too
-  // (e.g. a future waypoint 8) -- hiding its normal display without ever
-  // drawing it as a road, so it just silently disappeared from the map
-  // entirely. Restricting to ALLEY_DEFS's own indices fixes that: an
-  // unrelated waypoint route now falls through to the normal dashed-line
-  // rendering like any other path, same as before alleys existed.
+  // have >=2 points", which matched ANY waypoint route past the last
+  // defined alley too, hiding its normal display without ever drawing it
+  // as a road, so it just silently disappeared from the map entirely.
+  // Restricting to ALLEY_DEFS's own indices fixes that: an unrelated
+  // waypoint route (the next one past whatever's defined here) falls
+  // through to the normal dashed-line rendering like any other path,
+  // same as before alleys existed.
   function hasAlleyRoad(rec, pathIndex) {
     return (
       currentMapId === "amazon" &&
