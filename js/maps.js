@@ -1269,11 +1269,22 @@
     { pathIndex: 5, label: "ALLEY THREE" },
     { pathIndex: 6, label: "ALLEY FOUR" },
   ];
+  // NOTE: must only match the 4 actual alley slots (3-6) -- this is used
+  // both to decide which paths get drawn as an alley road AND (in
+  // renderPermanentPaths) to decide which paths get their normal
+  // line+badges HIDDEN. Earlier this only checked "does this pathIndex
+  // have >=2 points", which matched ANY waypoint route past index 6 too
+  // (e.g. a future waypoint 8) -- hiding its normal display without ever
+  // drawing it as a road, so it just silently disappeared from the map
+  // entirely. Restricting to ALLEY_DEFS's own indices fixes that: an
+  // unrelated waypoint route now falls through to the normal dashed-line
+  // rendering like any other path, same as before alleys existed.
   function hasAlleyRoad(rec, pathIndex) {
     return (
       currentMapId === "amazon" &&
       hasEntranceRoad(rec) &&
       hasOutRoad(rec) &&
+      ALLEY_DEFS.some((def) => def.pathIndex === pathIndex) &&
       !!rec.paths[pathIndex]?.points?.length &&
       rec.paths[pathIndex].points.length >= 2
     );
