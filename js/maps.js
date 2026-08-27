@@ -1290,23 +1290,81 @@
     if (!hasRecRoad(rec)) return null;
     return combinePointSequences(rec.paths[8].points, rec.paths[9].points);
   }
+  // The ribbon edge of `points` at whichever END sits closest to
+  // `targetPoint` -- e.g. for stitching onto another road when it isn't
+  // known in advance which end is the one that actually meets it.
+  function ribbonEdgeNearestPoint(points, targetPoint, widths) {
+    const dStart = metersBetween(points[0], targetPoint);
+    const dEnd = metersBetween(points[points.length - 1], targetPoint);
+    return ribbonEdgeAtEnd(points, dStart <= dEnd, widths);
+  }
   // Draws into the SAME shared fill/labels layers as renderEntranceRoad
   // (In Road/Out Road/alleys) -- those are really just "all textured
   // roads on this map" layers by this point, not entrance-specific.
   // Doesn't clear them itself; renderPermanentPaths calls this right
   // after renderEntranceRoad, which already cleared+redrew everything
-  // else this cycle.
-  function renderRecRoad(rec) {
+  // else this cycle. `alleysDrawn` is renderEntranceRoad's own finished
+  // alley list (points already snapped/dedupe'd) so Rec Road's own real
+  // end can be bridged onto Alley One's real ribbon edge -- Heath: Rec
+  // Road's waypoint-10 extension is meant to meet Alley One there, and
+  // without an explicit bridge (same idea as the In Road/Out Road
+  // junction) the two ribbons just stopped short of each other with a
+  // visible gap, since Rec Road isn't otherwise wired into the alley
+  // snapping system at all.
+  function renderRecRoad(rec, alleysDrawn) {
     const combined = getRecRoadCombinedRoute(rec);
     if (!combined) return;
+    const recWidths = { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS };
+    // Heath: "Rec Road only needs to be listed on waypoint 9" -- waypoint
+    // 10 is just an unlabeled extension. drawTexturedRoad's default
+    // labelFractions place the text at fixed fractions of the WHOLE
+    // route's length, which would repeat "REC ROAD" across the route 10
+    // stretch too (and, since route 10 runs close alongside In Road here,
+    // overlap it). combinePointSequences always puts route 9 (paths[8])
+    // first (see its own comment), so this finds route 9's own midpoint
+    // as a fraction of the combined route's total length and labels only
+    // there -- a single label, sitting on route 9's own stretch.
+    const { segLens, total } = routeSegLens(combined);
+    const n9 = rec.paths[8].points.length;
+    let route9Len = 0;
+    for (let i = 0; i < n9 - 1 && i < segLens.length; i++) route9Len += segLens[i];
+    const route9MidFraction = total > 0 ? route9Len / 2 / total : 0.5;
     drawTexturedRoad(combined, {
-      insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
-      outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+      widths: recWidths,
+      labelFractions: [route9MidFraction],
       labelText: "REC ROAD",
       startLabelText: null,
       fillLayer: entranceRoadFillLayer,
       labelsLayer: entranceRoadLabelsLayer,
     });
+
+    // Bridge Rec Road's own real end (whichever one sits closer to Alley
+    // One) onto Alley One's real ribbon edge -- same wedge-filling idea
+    // as the In Road/Out Road junction, just against whichever of Rec
+    // Road's two ends is actually the one meeting it.
+    const alleyOne = alleysDrawn && alleysDrawn.find((a) => a.label === "ALLEY ONE");
+    if (alleyOne && alleyOne.points && alleyOne.points.length >= 2) {
+      const alleyWidths = { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS };
+      const recStart = combined[0];
+      const recEnd = combined[combined.length - 1];
+      const alleyStart = alleyOne.points[0];
+      const alleyEnd = alleyOne.points[alleyOne.points.length - 1];
+      // Which of Rec Road's two ends actually meets Alley One -- whichever
+      // pairing (against either of Alley One's own two ends) is closest,
+      // same trick as combinePointSequences/snapAlleyToRoads.
+      const options = [
+        { d: metersBetween(recStart, alleyStart), recIsStart: true },
+        { d: metersBetween(recStart, alleyEnd), recIsStart: true },
+        { d: metersBetween(recEnd, alleyStart), recIsStart: false },
+        { d: metersBetween(recEnd, alleyEnd), recIsStart: false },
+      ];
+      options.sort((x, y) => x.d - y.d);
+      const recIsStart = options[0].recIsStart;
+      const recNearAlley = recIsStart ? recStart : recEnd;
+      const recEdge = ribbonEdgeAtEnd(combined, recIsStart, recWidths);
+      const alleyEdge = ribbonEdgeNearestPoint(alleyOne.points, recNearAlley, alleyWidths);
+      fillRibbonJunction(recEdge, alleyEdge, entranceRoadFillLayer);
+    }
   }
   // Orients `points` so whichever of its two ends is closer to
   // `referencePoint` comes first (reversing the array if that's the LAST
@@ -1625,6 +1683,11 @@
       const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS });
       fillRibbonJunction(entranceEdge, outRoadEdge, entranceRoadFillLayer);
     }
+
+    // Handed to renderRecRoad so it can bridge onto Alley One's real,
+    // finished ribbon edge (points already snapped/dedupe'd) rather than
+    // Alley One's raw un-snapped waypoints.
+    return alleysToDraw;
   }
 
   function renderPermanentPaths() {
@@ -1690,8 +1753,8 @@
         permanentPathsLayer.addLayer(marker);
       });
     });
-    renderEntranceRoad(rec);
-    renderRecRoad(rec);
+    const alleysDrawn = renderEntranceRoad(rec);
+    renderRecRoad(rec, alleysDrawn);
   }
   function rescaleAllPins() {
     if (!mapLeaflet) return;
