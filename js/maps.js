@@ -679,6 +679,22 @@
     // Pins and paths come from the server every time a map opens, so
     // something an admin placed from a different phone shows up here too.
     await Promise.all([refreshPinsForMap(mapId), refreshPathsForMap(mapId)]);
+    // Amazon Campground's def.center above is just a rough address geocode
+    // from before any real pin/path data existed -- it was landing the
+    // initial view well off from the actual property (Heath: "way off to
+    // the south east"). Once the real entrance road data is in, recenter
+    // on its actual free end instead -- a real coordinate, not a guess.
+    // Also updates currentMapCenter so the "am I actually at this
+    // property" arrival check (live-location dot/follow, above) measures
+    // distance from the right point too.
+    if (mapId === "amazon") {
+      const combined = getAmazonEntranceCombinedRoute(getMapRecord(mapId));
+      if (combined && combined.length) {
+        const entrancePoint = combined[0];
+        currentMapCenter = entrancePoint;
+        mapLeaflet.setView([entrancePoint.lat, entrancePoint.lng], 19, { animate: false });
+      }
+    }
     renderPermanentPins();
     renderPermanentPaths();
   }
@@ -967,15 +983,45 @@
   function hasEntranceRoad(rec) {
     return currentMapId === "amazon" && !!rec.paths[0]?.points?.length && !!rec.paths[1]?.points?.length;
   }
+  // The route 1 + route 2 join, shared between renderEntranceRoad below and
+  // openMapView's initial-view fix -- both need the same real (live,
+  // data-driven) entrance coordinate rather than each computing/guessing
+  // their own.
+  function getAmazonEntranceCombinedRoute(rec) {
+    if (!hasEntranceRoad(rec)) return null;
+    return combinePointSequences(rec.paths[0].points, rec.paths[1].points);
+  }
+  // How far the ribbon's true visual middle sits from the original
+  // route's points, now that the two sides are asymmetric (see the width
+  // constants above) -- half the difference, offset toward the outside
+  // (right) side. Text anchored to the raw route points would sit off
+  // toward the inside edge instead of the middle of the now-wider road.
+  const ROAD_VISUAL_CENTER_OFFSET_METERS = (ENTRANCE_ROAD_OUTSIDE_METERS - ENTRANCE_ROAD_INSIDE_METERS) / 2;
+  // Shifts every point of a route perpendicular to its own local
+  // direction, toward the "outside"/right side (same sign convention as
+  // bufferLineToRibbon's `right` -- see that function's comment) -- used
+  // to turn the raw route into the ribbon's actual visual centerline.
+  function offsetPolylinePerpendicular(points, offsetMeters) {
+    if (!offsetMeters) return points;
+    return points.map((p, i) => {
+      const prev = points[i - 1] || points[i];
+      const next = points[i + 1] || points[i];
+      const { latM, lngM } = metersPerDegreeAt(p.lat);
+      const dxM = (next.lng - prev.lng) * lngM;
+      const dyM = (next.lat - prev.lat) * latM;
+      const len = Math.sqrt(dxM * dxM + dyM * dyM) || 1;
+      const nx = -dyM / len;
+      const ny = dxM / len;
+      return offsetLatLng(p, -nx * offsetMeters, -ny * offsetMeters);
+    });
+  }
   function renderEntranceRoad(rec) {
     entranceRoadFillLayer?.clearLayers();
     entranceRoadLabelsLayer?.clearLayers();
-    if (!hasEntranceRoad(rec)) return;
-    const path1 = rec.paths[0]; // oldest = display number 1
-    const path2 = rec.paths[1]; // second-oldest = display number 2
+    const combined = getAmazonEntranceCombinedRoute(rec);
+    if (!combined) return;
     ensureDirtPatternDefs();
 
-    const combined = combinePointSequences(path1.points, path2.points);
     const ribbon = bufferLineToRibbon(combined, ENTRANCE_ROAD_INSIDE_METERS, ENTRANCE_ROAD_OUTSIDE_METERS);
     if (ribbon.length) {
       const ribbonPoly = L.polygon(
@@ -985,13 +1031,18 @@
       entranceRoadFillLayer.addLayer(ribbonPoly);
     }
 
+    // The ribbon's real visual middle, now that it's wider on the outside
+    // than the inside -- everything text-related below anchors to this,
+    // not the raw route points, so it sits centered on the road as drawn
+    // rather than drifting toward the inside edge.
+    const centerline = offsetPolylinePerpendicular(combined, ROAD_VISUAL_CENTER_OFFSET_METERS);
+
     // "ENTRANCE" belongs at route 1's free end -- whichever endpoint of
     // route 1 did NOT get used to join onto route 2. combinePointSequences
     // always puts route 1 first in `combined` (reversed if needed so its
-    // free end leads), so combined[0] IS that free end. Nudged west
-    // ("left") and further north per Heath's feedback on the last two
-    // rounds.
-    const entranceLabelAt = offsetLatLng(combined[0], -4, 14);
+    // free end leads), so centerline[0] IS that free end. Nudged west
+    // ("left") and further north per Heath's feedback on earlier rounds.
+    const entranceLabelAt = offsetLatLng(centerline[0], -4, 14);
     entranceRoadLabelsLayer.addLayer(
       L.marker([entranceLabelAt.lat, entranceLabelAt.lng], {
         icon: makeEntranceLabelIcon("ENTRANCE"),
@@ -1000,9 +1051,9 @@
       })
     );
 
-    const { segLens, total } = routeSegLens(combined);
+    const { segLens, total } = routeSegLens(centerline);
     [0.25, 0.5, 0.75].forEach((frac) => {
-      renderFlowingRoadText("IN ROAD", combined, segLens, total, frac, entranceRoadLabelsLayer);
+      renderFlowingRoadText("IN ROAD", centerline, segLens, total, frac, entranceRoadLabelsLayer);
     });
   }
 
