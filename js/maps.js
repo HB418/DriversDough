@@ -1106,17 +1106,176 @@
   function hasOutRoad(rec) {
     return currentMapId === "amazon" && !!rec.paths[2]?.points?.length && rec.paths[2].points.length >= 2;
   }
+  // Orients `points` so whichever of its two ends is closer to
+  // `referencePoint` comes first (reversing the array if that's the LAST
+  // point, not the first) -- used below to figure out which end of route
+  // 3 is the one actually meeting the entrance road, without assuming
+  // it was drawn in any particular direction.
+  function orientTowardPoint(points, referencePoint) {
+    const dStart = metersBetween(points[0], referencePoint);
+    const dEnd = metersBetween(points[points.length - 1], referencePoint);
+    return dEnd < dStart ? points.slice().reverse() : points;
+  }
+  // The closest point ON a polyline (not just its nearest vertex -- an
+  // actual point along whichever segment it falls on) to `target`, found
+  // by projecting `target` onto every segment in local meters and keeping
+  // the nearest. Used to connect an alley into the MIDDLE of In Road/Out
+  // Road, not just their endpoints -- alleys branch off partway along a
+  // road, not necessarily where it happens to start or end.
+  function closestPointOnPolyline(points, target) {
+    let best = null;
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const { latM, lngM } = metersPerDegreeAt(a.lat);
+      const bxM = (b.lng - a.lng) * lngM;
+      const byM = (b.lat - a.lat) * latM;
+      const txM = (target.lng - a.lng) * lngM;
+      const tyM = (target.lat - a.lat) * latM;
+      const abLenSq = bxM * bxM + byM * byM;
+      let t = abLenSq ? (txM * bxM + tyM * byM) / abLenSq : 0;
+      t = Math.max(0, Math.min(1, t));
+      const projXM = bxM * t;
+      const projYM = byM * t;
+      const distM = Math.hypot(txM - projXM, tyM - projYM);
+      if (!best || distM < best.distM) {
+        best = {
+          point: { lat: a.lat + projYM / latM, lng: a.lng + projXM / lngM },
+          segmentIndex: i,
+          t,
+          distM,
+        };
+      }
+    }
+    return best;
+  }
+  // Inserts a closestPointOnPolyline() hit as a real vertex in `points` --
+  // skipped when the hit landed effectively AT an existing vertex (start
+  // or end of its segment), so a connection near a road's own endpoint
+  // doesn't leave a redundant near-duplicate point sitting right next to
+  // it.
+  function insertPointOnPolyline(points, hit) {
+    if (hit.t <= 0.001 || hit.t >= 0.999) return points;
+    const copy = points.slice();
+    copy.splice(hit.segmentIndex + 1, 0, hit.point);
+    return copy;
+  }
+  // Snaps one alley's two ends onto whichever of In Road/Out Road each is
+  // actually closest to (never assuming the alley's own Start is the
+  // In Road end), inserting a matching vertex into that road's polyline
+  // at the exact connection point so the two ribbons share a real point
+  // and touch there -- same idea as the In Road <-> Out Road junction
+  // snap above, just against an arbitrary point along the road instead of
+  // only its endpoints. Returns the (possibly point-for-point-adjusted)
+  // alley + updated in/out road polylines; callers thread the updated
+  // road polylines into the next alley so multiple alleys on the same
+  // road all end up as real vertices on it.
+  function snapAlleyToRoads(alleyPoints, inRoadPolyline, outRoadPolyline) {
+    const start = alleyPoints[0];
+    const end = alleyPoints[alleyPoints.length - 1];
+    const hitStartIn = closestPointOnPolyline(inRoadPolyline, start);
+    const hitEndIn = closestPointOnPolyline(inRoadPolyline, end);
+    const hitStartOut = closestPointOnPolyline(outRoadPolyline, start);
+    const hitEndOut = closestPointOnPolyline(outRoadPolyline, end);
+    // Two ways to pair the alley's two ends with the two roads -- pick
+    // whichever pairing has the smaller total gap, rather than assuming
+    // the alley's stored Start is always the In Road end.
+    const startToIn = hitStartIn.distM + hitEndOut.distM;
+    const endToIn = hitEndIn.distM + hitStartOut.distM;
+    const newAlleyPoints = alleyPoints.slice();
+    let inHit, outHit;
+    if (startToIn <= endToIn) {
+      inHit = hitStartIn;
+      outHit = hitEndOut;
+      newAlleyPoints[0] = inHit.point;
+      newAlleyPoints[newAlleyPoints.length - 1] = outHit.point;
+    } else {
+      inHit = hitEndIn;
+      outHit = hitStartOut;
+      newAlleyPoints[newAlleyPoints.length - 1] = inHit.point;
+      newAlleyPoints[0] = outHit.point;
+    }
+    return {
+      alleyPoints: newAlleyPoints,
+      inRoadPolyline: insertPointOnPolyline(inRoadPolyline, inHit),
+      outRoadPolyline: insertPointOnPolyline(outRoadPolyline, outHit),
+    };
+  }
+  // Waypoints 4-7 ("Alley One" through "Alley Four") -- each one a short
+  // connector between In Road and Out Road, same width as Out Road (no
+  // building crowds these either, per Heath). Only rendered once BOTH
+  // In Road and Out Road exist, since an alley's whole purpose is
+  // bridging the two -- a floating unconnected "alley" wouldn't read as
+  // one.
+  const ALLEY_DEFS = [
+    { pathIndex: 3, label: "ALLEY ONE" },
+    { pathIndex: 4, label: "ALLEY TWO" },
+    { pathIndex: 5, label: "ALLEY THREE" },
+    { pathIndex: 6, label: "ALLEY FOUR" },
+  ];
+  function hasAlleyRoad(rec, pathIndex) {
+    return (
+      currentMapId === "amazon" &&
+      hasEntranceRoad(rec) &&
+      hasOutRoad(rec) &&
+      !!rec.paths[pathIndex]?.points?.length &&
+      rec.paths[pathIndex].points.length >= 2
+    );
+  }
   function renderEntranceRoad(rec) {
     entranceRoadFillLayer?.clearLayers();
     entranceRoadLabelsLayer?.clearLayers();
 
-    const combined = getAmazonEntranceCombinedRoute(rec);
+    let combined = getAmazonEntranceCombinedRoute(rec);
+    let outRoadPoints = hasOutRoad(rec) ? rec.paths[2].points : null;
+
+    // Heath: "in road should connect to out road ... where it would
+    // juxtapose" -- route 2's far end and route 3's near end are two
+    // independently hand-placed waypoints, so they likely sit a couple
+    // meters apart rather than exactly coincident, which left a visible
+    // gap between the two ribbons. Snapping both to their shared midpoint
+    // makes them share an actual vertex, so the ribbons touch/overlap
+    // right at the real junction instead of stopping short of each other.
+    if (combined && outRoadPoints) {
+      outRoadPoints = orientTowardPoint(outRoadPoints, combined[combined.length - 1]);
+      const entranceFarEnd = combined[combined.length - 1];
+      const outRoadNearEnd = outRoadPoints[0];
+      const junction = {
+        lat: (entranceFarEnd.lat + outRoadNearEnd.lat) / 2,
+        lng: (entranceFarEnd.lng + outRoadNearEnd.lng) / 2,
+      };
+      combined = combined.slice(0, -1).concat([junction]);
+      outRoadPoints = [junction].concat(outRoadPoints.slice(1));
+    }
+
+    // Alleys connect into the MIDDLE of In Road/Out Road, not just their
+    // ends -- each one that's present gets snapped in now (updating
+    // `combined`/`outRoadPoints` with a real inserted vertex at its
+    // connection point on each road) before either road is actually
+    // drawn, so both roads' final ribbons already include every alley
+    // junction. Processed one at a time so a later alley snaps against
+    // whatever the roads look like after any earlier alley already
+    // touched them.
+    const alleysToDraw = [];
+    if (combined && outRoadPoints) {
+      ALLEY_DEFS.forEach((def) => {
+        if (!hasAlleyRoad(rec, def.pathIndex)) return;
+        const snapped = snapAlleyToRoads(rec.paths[def.pathIndex].points, combined, outRoadPoints);
+        combined = snapped.inRoadPolyline;
+        outRoadPoints = snapped.outRoadPolyline;
+        alleysToDraw.push({ points: snapped.alleyPoints, label: def.label });
+      });
+    }
+
     if (combined) {
       // "ENTRANCE" belongs at route 1's free end -- whichever endpoint of
       // route 1 did NOT get used to join onto route 2. combinePointSequences
       // always puts route 1 first in `combined` (reversed if needed so its
       // free end leads), so centerline[0] IS that free end. Nudged west
       // ("left") and further north per Heath's feedback on earlier rounds.
+      // Alley insertions above only ever land strictly BETWEEN existing
+      // points, never replacing index 0, so this stays the true free end
+      // regardless of how many alleys touched this road.
       drawTexturedRoad(combined, {
         insideMeters: ENTRANCE_ROAD_INSIDE_METERS,
         outsideMeters: ENTRANCE_ROAD_OUTSIDE_METERS,
@@ -1128,8 +1287,8 @@
       });
     }
 
-    if (hasOutRoad(rec)) {
-      drawTexturedRoad(rec.paths[2].points, {
+    if (outRoadPoints) {
+      drawTexturedRoad(outRoadPoints, {
         insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
         outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
         labelText: "OUT ROAD",
@@ -1138,6 +1297,17 @@
         labelsLayer: entranceRoadLabelsLayer,
       });
     }
+
+    alleysToDraw.forEach((alley) => {
+      drawTexturedRoad(alley.points, {
+        insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+        outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+        labelText: alley.label,
+        startLabelText: null,
+        fillLayer: entranceRoadFillLayer,
+        labelsLayer: entranceRoadLabelsLayer,
+      });
+    });
   }
 
   function renderPermanentPaths() {
@@ -1150,12 +1320,13 @@
     const hideAsOutRoad = hasOutRoad(rec);
     rec.paths.forEach((path, pathIndex) => {
       if (editingPathId === path.id) return;
-      // Routes 1 and 2 are the entrance road, route 3 is the out road --
-      // their dirt-road overlays (below) are their visual now, so skip
-      // their own colored line + S/E badges entirely rather than drawing
-      // both on top of each other.
+      // Routes 1 and 2 are the entrance road, route 3 is the out road,
+      // and 4-7 are the alleys -- their dirt-road overlays (below) are
+      // their visual now, so skip their own colored line + S/E badges
+      // entirely rather than drawing both on top of each other.
       if (hideAsEntranceRoad && pathIndex < 2) return;
       if (hideAsOutRoad && pathIndex === 2) return;
+      if (hasAlleyRoad(rec, pathIndex)) return;
       const pathNumber = pathIndex + 1;
       const pathColor = pathColorFor(pathIndex);
       const latlngs = path.points.map((p) => [p.lat, p.lng]);
