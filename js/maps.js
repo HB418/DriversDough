@@ -1007,6 +1007,22 @@
   // two roads read as the same kind of thing).
   const OUT_ROAD_HALF_WIDTH_METERS = 3.0;
 
+  // Every road in this feature ends up the same 6m total girth (entrance
+  // road: 1.75+4.25; out road/alleys: 3+3), which is what lets one shared
+  // "junction patch" radius work everywhere two ribbons are stitched
+  // together end-to-end or mid-segment (see drawJunctionPatch below) --
+  // computed from the real width constants rather than hardcoded so it
+  // stays correct if those ever change. bufferLineToRibbon has no true
+  // miter/bevel join, so wherever two independently-drawn ribbons meet at
+  // an angle, the flat perpendicular cut at each one's end can leave a
+  // sliver of bare ground -- reading as a "cut off" road end, or as a
+  // "split" where an alley meets a road mid-segment. A small filled disc
+  // dropped on top of the connection point, sized to fully cover both
+  // ribbons' width at that point regardless of the angle between them,
+  // papers over that gap cheaply without needing real miter geometry.
+  const JUNCTION_PATCH_RADIUS_METERS =
+    Math.max(ENTRANCE_ROAD_INSIDE_METERS + ENTRANCE_ROAD_OUTSIDE_METERS, OUT_ROAD_HALF_WIDTH_METERS * 2) / 2 + 0.5;
+
   // Amazon Campground specific: waypoint routes 1 and 2 are one continuous
   // real dirt road (per Heath) that just got drawn as two separate
   // waypoint chains -- this renders them as a single textured road with
@@ -1094,9 +1110,47 @@
     const { segLens, total } = routeSegLens(centerline);
     const scale = scaleForZoom(mapLeaflet);
     const flip = overallRouteFlip(centerline);
-    [0.25, 0.5, 0.75].forEach((frac) => {
+    const labelFractions = opts.labelFractions || [0.25, 0.5, 0.75];
+    labelFractions.forEach((frac) => {
       renderFlowingRoadText(opts.labelText, centerline, segLens, total, frac, opts.labelsLayer, scale, flip);
     });
+  }
+  // Drops a small filled dirt-textured disc on top of a spot where two
+  // ribbons are stitched together (see JUNCTION_PATCH_RADIUS_METERS above
+  // for why) -- purely cosmetic, papering over the flat-cut-join gap, so
+  // callers just fire-and-forget this after both ribbons on either side
+  // of the junction are already in the fill layer (added last = drawn on
+  // top).
+  function drawJunctionPatch(point, fillLayer) {
+    const patch = L.circle([point.lat, point.lng], {
+      radius: JUNCTION_PATCH_RADIUS_METERS,
+      color: "#6b4a2f",
+      weight: 1,
+      opacity: 0.5,
+      fillColor: "url(#dd-dirt-pattern)",
+      fillOpacity: 0.95,
+      interactive: false,
+    });
+    fillLayer.addLayer(patch);
+  }
+  // Merges/drops points that sit closer together than `minMeters`, always
+  // keeping the first and last points untouched -- defensive cleanup for
+  // near-duplicate points that can end up sitting right next to each
+  // other after junction/alley snapping inserts a new vertex very close
+  // to an existing one. A near-zero-length segment between two points
+  // makes bufferLineToRibbon's per-vertex tangent (computed from the
+  // points on either side) numerically unstable, which can show up as an
+  // erratic kink or pinch in the ribbon right at that spot.
+  function dedupeAdjacentPoints(points, minMeters) {
+    if (points.length <= 2) return points;
+    const result = [points[0]];
+    for (let i = 1; i < points.length - 1; i++) {
+      if (metersBetween(result[result.length - 1], points[i]) >= minMeters) {
+        result.push(points[i]);
+      }
+    }
+    result.push(points[points.length - 1]);
+    return result;
   }
   // Amazon Campground specific: waypoint 3 ("Orange road") gets the same
   // textured-road treatment as the entrance road, just as its own single
@@ -1199,6 +1253,8 @@
       alleyPoints: newAlleyPoints,
       inRoadPolyline: insertPointOnPolyline(inRoadPolyline, inHit),
       outRoadPolyline: insertPointOnPolyline(outRoadPolyline, outHit),
+      inPoint: inHit.point,
+      outPoint: outHit.point,
     };
   }
   // Waypoints 4-7 ("Alley One" through "Alley Four") -- each one a short
@@ -1228,6 +1284,11 @@
 
     let combined = getAmazonEntranceCombinedRoute(rec);
     let outRoadPoints = hasOutRoad(rec) ? rec.paths[2].points : null;
+    // Every place two ribbons get stitched together gets a cosmetic patch
+    // circle dropped on top afterward (see drawJunctionPatch) -- collected
+    // here as they're discovered, drawn once all the roads themselves are
+    // in the fill layer so the patches sit on top of both ribbons.
+    const junctionPoints = [];
 
     // Heath: "in road should connect to out road ... where it would
     // juxtapose" -- route 2's far end and route 3's near end are two
@@ -1246,6 +1307,7 @@
       };
       combined = combined.slice(0, -1).concat([junction]);
       outRoadPoints = [junction].concat(outRoadPoints.slice(1));
+      junctionPoints.push(junction);
     }
 
     // Alleys connect into the MIDDLE of In Road/Out Road, not just their
@@ -1264,8 +1326,24 @@
         combined = snapped.inRoadPolyline;
         outRoadPoints = snapped.outRoadPolyline;
         alleysToDraw.push({ points: snapped.alleyPoints, label: def.label });
+        junctionPoints.push(snapped.inPoint, snapped.outPoint);
       });
     }
+
+    // Defensive cleanup: all the snapping above can leave two points
+    // sitting almost on top of each other (an alley connecting right
+    // next to where an earlier alley -- or the in/out road junction --
+    // already inserted a vertex), which makes the ribbon's per-vertex
+    // tangent at that spot numerically unstable. Dropping near-duplicates
+    // now, after all snapping is done but before any ribbon is actually
+    // built, keeps every road's own start/end intact (dedupeAdjacentPoints
+    // never touches the first/last point).
+    const DEDUPE_MIN_METERS = 0.5;
+    if (combined) combined = dedupeAdjacentPoints(combined, DEDUPE_MIN_METERS);
+    if (outRoadPoints) outRoadPoints = dedupeAdjacentPoints(outRoadPoints, DEDUPE_MIN_METERS);
+    alleysToDraw.forEach((alley) => {
+      alley.points = dedupeAdjacentPoints(alley.points, DEDUPE_MIN_METERS);
+    });
 
     if (combined) {
       // "ENTRANCE" belongs at route 1's free end -- whichever endpoint of
@@ -1303,11 +1381,17 @@
         insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
         outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
         labelText: alley.label,
+        labelFractions: [0.5],
         startLabelText: null,
         fillLayer: entranceRoadFillLayer,
         labelsLayer: entranceRoadLabelsLayer,
       });
     });
+
+    // Patches go on last, on top of every ribbon, so they actually cover
+    // the joins instead of getting drawn over by whichever road happened
+    // to render after them.
+    junctionPoints.forEach((point) => drawJunctionPatch(point, entranceRoadFillLayer));
   }
 
   function renderPermanentPaths() {
