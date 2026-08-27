@@ -747,13 +747,23 @@
     const dy = (b.lat - a.lat) * latM;
     return Math.sqrt(dx * dx + dy * dy);
   }
-  // Buffers a polyline into a ribbon polygon of the given width (meters) --
-  // a simple per-vertex perpendicular offset, not a proper miter/bevel
-  // join. Good enough for a decorative "this is a road" overlay; not
-  // survey-grade, and can pinch slightly at a sharp turn.
-  function bufferLineToRibbon(points, widthMeters) {
+  // Buffers a polyline into a ribbon polygon -- a simple per-vertex
+  // perpendicular offset, not a proper miter/bevel join. Good enough for a
+  // decorative "this is a road" overlay; not survey-grade, and can pinch
+  // slightly at a sharp turn.
+  //
+  // Takes separate left/right widths (meters) rather than one shared
+  // width so the ribbon can be widened asymmetrically -- e.g. the entrance
+  // road overlay below needs its extra width to only ever grow toward the
+  // side away from the buildings, never toward them. "Left"/"right" here
+  // are geometric, facing the points' own direction of travel (index 0 ->
+  // last): for a tangent vector (dx, dy) in meters (x=east, y=north),
+  // rotating it +90 degrees gives (-dy, dx), which points to the LEFT of
+  // that direction of travel (walking due east, "left" is north) -- that's
+  // exactly the (nx, ny) below, so `left` uses +(nx,ny) and `right` uses
+  // the opposite.
+  function bufferLineToRibbon(points, leftWidthMeters, rightWidthMeters) {
     if (points.length < 2) return [];
-    const half = widthMeters / 2;
     const left = [];
     const right = [];
     for (let i = 0; i < points.length; i++) {
@@ -765,8 +775,8 @@
       const len = Math.sqrt(dxM * dxM + dyM * dyM) || 1;
       const nx = -dyM / len;
       const ny = dxM / len;
-      left.push(offsetLatLng(points[i], nx * half, ny * half));
-      right.push(offsetLatLng(points[i], -nx * half, -ny * half));
+      left.push(offsetLatLng(points[i], nx * leftWidthMeters, ny * leftWidthMeters));
+      right.push(offsetLatLng(points[i], -nx * rightWidthMeters, -ny * rightWidthMeters));
     }
     return left.concat(right.reverse());
   }
@@ -931,7 +941,16 @@
     }
   }
 
-  const ENTRANCE_ROAD_WIDTH_METERS = 3.5;
+  // The old symmetric 3.5m-total width (1.75m each side) put the road
+  // over buildings whenever it was widened, because the buildings sit
+  // close along the LEFT side of the route (facing the direction of
+  // travel from ENTRANCE toward the junction/orange road -- see Heath's
+  // answer 2026-08-27). So the two sides now grow independently: the
+  // inside (left, toward the buildings) stays put at the old half-width,
+  // and all the extra thickness goes to the outside (right, away from
+  // the buildings).
+  const ENTRANCE_ROAD_INSIDE_METERS = 1.75; // left -- unchanged, don't grow toward buildings
+  const ENTRANCE_ROAD_OUTSIDE_METERS = 4.25; // right -- all the added width lives here
 
   // Amazon Campground specific: waypoint routes 1 and 2 are one continuous
   // real dirt road (per Heath) that just got drawn as two separate
@@ -957,7 +976,7 @@
     ensureDirtPatternDefs();
 
     const combined = combinePointSequences(path1.points, path2.points);
-    const ribbon = bufferLineToRibbon(combined, ENTRANCE_ROAD_WIDTH_METERS);
+    const ribbon = bufferLineToRibbon(combined, ENTRANCE_ROAD_INSIDE_METERS, ENTRANCE_ROAD_OUTSIDE_METERS);
     if (ribbon.length) {
       const ribbonPoly = L.polygon(
         ribbon.map((p) => [p.lat, p.lng]),
