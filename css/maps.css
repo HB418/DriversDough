@@ -288,6 +288,20 @@
   text-shadow: 0 0 3px #000, 0 0 3px #000, 1px 1px 1px #000;
 }
 
+/* === Entrance road overlay (Amazon Campground, routes 1+2 specifically) ===
+   Large, high-contrast text for "ENTRANCE"/"IN ROAD" -- meant to read at a
+   glance the way painted road signage does, not blend in like the path
+   badges do. */
+.dd-road-label {
+  display: inline-block;
+  color: #fff;
+  font-weight: 800;
+  font-size: 20px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  text-shadow: 0 0 4px #000, 0 0 6px #000, 1px 1px 2px #000;
+}
+
 /* === Pin marker (Leaflet divIcon contents) ===
    The line rotates on its own (not the whole icon) so the number badge
    always stays upright and readable no matter what direction the line

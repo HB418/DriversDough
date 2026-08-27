@@ -358,6 +358,8 @@
   let followMode = true; // map re-centers on the live-location dot until the user drags away
 
   let permanentPathsLayer = null;
+  let entranceRoadFillLayer = null; // dirt-road ribbon, rendered BELOW the path lines/badges
+  let entranceRoadLabelsLayer = null; // "ENTRANCE"/"IN ROAD" text, rendered ABOVE everything
   let pendingPathPoints = []; // [{lat,lng}, ...] while placing a new waypoint chain or editing an existing one
   let pendingPathMarkers = []; // parallel Leaflet markers, one per pendingPathPoints entry
   let pendingPathLine = null; // L.polyline joining pendingPathPoints
@@ -653,7 +655,9 @@
         attribution: "Tiles &copy; Esri",
       }).addTo(mapLeaflet);
       permanentLayer = L.layerGroup().addTo(mapLeaflet);
+      entranceRoadFillLayer = L.layerGroup().addTo(mapLeaflet);
       permanentPathsLayer = L.layerGroup().addTo(mapLeaflet);
+      entranceRoadLabelsLayer = L.layerGroup().addTo(mapLeaflet);
       coordGridLayer = L.layerGroup().addTo(mapLeaflet);
       mapLeaflet.on("click", handleMapClick);
       mapLeaflet.on("zoomend", rescaleAllPins);
@@ -724,6 +728,176 @@
   // both always live -- there's no separate submode to gate on). The path
   // currently being edited (editingPathId) is skipped here -- it's
   // rendered by renderPendingPath() instead, as draggable points.
+  // --- Small planar-approx geometry helpers (meters), used only for the
+  // entrance-road overlay below. The area covered by any one property map
+  // is small enough (a few hundred meters) that treating degrees as locally
+  // flat is accurate to well under a foot -- no need for real geodesy here.
+  function metersPerDegreeAt(lat) {
+    const latM = 111320;
+    const lngM = 111320 * Math.cos((lat * Math.PI) / 180);
+    return { latM, lngM };
+  }
+  function offsetLatLng(p, dxMeters, dyMeters) {
+    const { latM, lngM } = metersPerDegreeAt(p.lat);
+    return { lat: p.lat + dyMeters / latM, lng: p.lng + dxMeters / lngM };
+  }
+  function metersBetween(a, b) {
+    const { latM, lngM } = metersPerDegreeAt((a.lat + b.lat) / 2);
+    const dx = (b.lng - a.lng) * lngM;
+    const dy = (b.lat - a.lat) * latM;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  // Buffers a polyline into a ribbon polygon of the given width (meters) --
+  // a simple per-vertex perpendicular offset, not a proper miter/bevel
+  // join. Good enough for a decorative "this is a road" overlay; not
+  // survey-grade, and can pinch slightly at a sharp turn.
+  function bufferLineToRibbon(points, widthMeters) {
+    if (points.length < 2) return [];
+    const half = widthMeters / 2;
+    const left = [];
+    const right = [];
+    for (let i = 0; i < points.length; i++) {
+      const prev = points[i - 1] || points[i];
+      const next = points[i + 1] || points[i];
+      const { latM, lngM } = metersPerDegreeAt(points[i].lat);
+      const dxM = (next.lng - prev.lng) * lngM;
+      const dyM = (next.lat - prev.lat) * latM;
+      const len = Math.sqrt(dxM * dxM + dyM * dyM) || 1;
+      const nx = -dyM / len;
+      const ny = dxM / len;
+      left.push(offsetLatLng(points[i], nx * half, ny * half));
+      right.push(offsetLatLng(points[i], -nx * half, -ny * half));
+    }
+    return left.concat(right.reverse());
+  }
+  // Joins two point sequences end-to-end, auto-detecting which pair of
+  // endpoints is actually adjacent (and reversing either sequence as
+  // needed) by picking whichever of the 4 possible pairings has the
+  // smallest gap -- so callers don't have to know in advance which way
+  // either path was originally drawn.
+  function combinePointSequences(pointsA, pointsB) {
+    const aStart = pointsA[0];
+    const aEnd = pointsA[pointsA.length - 1];
+    const bStart = pointsB[0];
+    const bEnd = pointsB[pointsB.length - 1];
+    const options = [
+      { d: metersBetween(aEnd, bStart), build: () => pointsA.concat(pointsB) },
+      { d: metersBetween(aEnd, bEnd), build: () => pointsA.concat(pointsB.slice().reverse()) },
+      { d: metersBetween(aStart, bStart), build: () => pointsA.slice().reverse().concat(pointsB) },
+      { d: metersBetween(aStart, bEnd), build: () => pointsA.slice().reverse().concat(pointsB.slice().reverse()) },
+    ];
+    options.sort((x, y) => x.d - y.d);
+    return options[0].build();
+  }
+  // The point a given fraction (0-1) of the way along a multi-point route,
+  // by cumulative distance -- used to space "IN ROAD" labels evenly along
+  // the combined entrance road regardless of how many points make it up.
+  function pointAtFraction(points, fraction) {
+    const segLens = [];
+    let total = 0;
+    for (let i = 0; i < points.length - 1; i++) {
+      const d = metersBetween(points[i], points[i + 1]);
+      segLens.push(d);
+      total += d;
+    }
+    let target = total * fraction;
+    for (let i = 0; i < segLens.length; i++) {
+      if (target <= segLens[i] || i === segLens.length - 1) {
+        const t = segLens[i] ? Math.min(1, target / segLens[i]) : 0;
+        const a = points[i];
+        const b = points[i + 1];
+        return { lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t };
+      }
+      target -= segLens[i];
+    }
+    return points[points.length - 1];
+  }
+
+  // A procedural dirt/gravel texture (mottled tan, no external image) --
+  // injected into the page once as a reusable SVG pattern, then referenced
+  // by fillColor on the entrance-road ribbon polygon below. feTurbulence
+  // gives it grain instead of a flat color, so it actually reads as a
+  // texture rather than a solid-color road shape.
+  let dirtPatternReady = false;
+  function ensureDirtPatternDefs() {
+    if (dirtPatternReady) return;
+    dirtPatternReady = true;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "0");
+    svg.setAttribute("height", "0");
+    svg.style.position = "absolute";
+    svg.innerHTML =
+      '<defs>' +
+      '<filter id="dd-dirt-noise" x="0" y="0" width="100%" height="100%">' +
+      '<feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="3" seed="7" result="noise"/>' +
+      '<feColorMatrix in="noise" type="matrix" values="0 0 0 0 0.55  0 0 0 0 0.42  0 0 0 0 0.30  0 0 0 0.55 0"/>' +
+      '</filter>' +
+      '<pattern id="dd-dirt-pattern" patternUnits="userSpaceOnUse" width="60" height="60">' +
+      '<rect width="60" height="60" fill="#a9835f"/>' +
+      '<rect width="60" height="60" filter="url(#dd-dirt-noise)"/>' +
+      '</pattern>' +
+      '</defs>';
+    document.body.appendChild(svg);
+  }
+
+  function makeRoadLabelIcon(text) {
+    return L.divIcon({
+      html: '<span class="dd-road-label">' + text + "</span>",
+      className: "dd-path-div-icon",
+      iconSize: null,
+    });
+  }
+
+  const ENTRANCE_ROAD_WIDTH_METERS = 3.5;
+
+  // Amazon Campground specific: waypoint routes 1 and 2 are one continuous
+  // real dirt road (per Heath) that just got drawn as two separate
+  // waypoint chains -- this renders them as a single textured road with
+  // "ENTRANCE" at the free end (route 1's end that ISN'T the join with
+  // route 2) and "IN ROAD" repeated a few times along its length, without
+  // touching the underlying path data (routes 1/2 stay two separate,
+  // independently-editable saved paths; this is a purely visual overlay
+  // computed fresh from their current points every render).
+  function renderEntranceRoad(rec) {
+    entranceRoadFillLayer?.clearLayers();
+    entranceRoadLabelsLayer?.clearLayers();
+    if (currentMapId !== "amazon" || rec.paths.length < 2) return;
+    const path1 = rec.paths[0]; // oldest = display number 1
+    const path2 = rec.paths[1]; // second-oldest = display number 2
+    if (!path1?.points?.length || !path2?.points?.length) return;
+    ensureDirtPatternDefs();
+
+    const combined = combinePointSequences(path1.points, path2.points);
+    const ribbon = bufferLineToRibbon(combined, ENTRANCE_ROAD_WIDTH_METERS);
+    if (ribbon.length) {
+      const ribbonPoly = L.polygon(
+        ribbon.map((p) => [p.lat, p.lng]),
+        { color: "#6b4a2f", weight: 1, opacity: 0.5, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 0.95, interactive: false }
+      );
+      entranceRoadFillLayer.addLayer(ribbonPoly);
+    }
+
+    // "ENTRANCE" belongs at route 1's free end -- whichever endpoint of
+    // route 1 did NOT get used to join onto route 2. combinePointSequences
+    // always puts route 1 first in `combined` (reversed if needed so its
+    // free end leads), so combined[0] IS that free end.
+    const entranceLabelAt = offsetLatLng(combined[0], 0, 8); // 8m north ("just above")
+    entranceRoadLabelsLayer.addLayer(
+      L.marker([entranceLabelAt.lat, entranceLabelAt.lng], {
+        icon: makeRoadLabelIcon("ENTRANCE"),
+        interactive: false,
+        keyboard: false,
+      })
+    );
+
+    [0.25, 0.5, 0.75].forEach((frac) => {
+      const at = pointAtFraction(combined, frac);
+      entranceRoadLabelsLayer.addLayer(
+        L.marker([at.lat, at.lng], { icon: makeRoadLabelIcon("IN ROAD"), interactive: false, keyboard: false })
+      );
+    });
+  }
+
   function renderPermanentPaths() {
     if (!permanentPathsLayer) return;
     permanentPathsLayer.clearLayers();
@@ -765,6 +939,7 @@
         permanentPathsLayer.addLayer(marker);
       });
     });
+    renderEntranceRoad(rec);
   }
   function rescaleAllPins() {
     if (!mapLeaflet) return;
