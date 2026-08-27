@@ -371,6 +371,7 @@
   const mapTitleEl = document.getElementById("dd-map-title");
   const mapBackBtn = document.getElementById("dd-map-back");
   const setupToggleBtn = document.getElementById("dd-map-setup-toggle");
+  const coordGridToggleBtn = document.getElementById("dd-map-grid-toggle");
   const searchInput = document.getElementById("dd-map-search-input");
   const searchBtn = document.getElementById("dd-map-search-btn");
   const searchMsg = document.getElementById("dd-map-search-msg");
@@ -539,6 +540,73 @@
   }
   recenterBtn?.addEventListener("click", recenterOnMe);
 
+  // === Coordinate grid ("Grid" toggle, admin only) ===
+  // A live lat/lng graticule, each line labeled with its actual
+  // coordinate -- exists so Claude can ask for a screenshot of it and read
+  // real coordinates back off the image, since the live map data isn't
+  // reachable directly from the sandbox this runs in. Purely a rendering
+  // aid: nothing here is stored, nothing here is admin-only in effect
+  // (read access to a graticule isn't sensitive) -- gated to admins only
+  // because it's a working tool, not something a driver needs cluttering
+  // their view.
+  let coordGridOn = false;
+  let coordGridLayer = null;
+
+  // Picks a "nice" round degree step (1/2/5 x a power of ten) that gives
+  // roughly `targetLines` gridlines across the given span -- same idea as
+  // picking readable axis ticks on a chart, just in degrees instead of
+  // linear units.
+  function niceGridStep(span, targetLines) {
+    const raw = span / targetLines;
+    const exp = Math.floor(Math.log10(raw));
+    const frac = raw / Math.pow(10, exp);
+    const niceFrac = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
+    return niceFrac * Math.pow(10, exp);
+  }
+
+  function coordGridLabel(text, cssClass) {
+    return L.divIcon({
+      html: '<span class="dd-coord-grid-label' + (cssClass ? " " + cssClass : "") + '">' + text + "</span>",
+      className: "dd-path-div-icon", // reuses the existing "no default Leaflet icon chrome" reset
+      iconSize: null,
+    });
+  }
+
+  function renderCoordGrid() {
+    if (!coordGridLayer) return;
+    coordGridLayer.clearLayers();
+    if (!coordGridOn || !mapLeaflet) return;
+    const bounds = mapLeaflet.getBounds();
+    const north = bounds.getNorth();
+    const south = bounds.getSouth();
+    const east = bounds.getEast();
+    const west = bounds.getWest();
+    const latStep = niceGridStep(north - south, 7);
+    const lngStep = niceGridStep(east - west, 7);
+    const lineOpts = { color: "#fff", weight: 1, opacity: 0.6, interactive: false, dashArray: "4 4" };
+
+    const firstLat = Math.ceil(south / latStep) * latStep;
+    for (let lat = firstLat; lat <= north; lat += latStep) {
+      coordGridLayer.addLayer(L.polyline([[lat, west], [lat, east]], lineOpts));
+      coordGridLayer.addLayer(
+        L.marker([lat, west], { icon: coordGridLabel(lat.toFixed(5)), interactive: false, keyboard: false })
+      );
+    }
+    const firstLng = Math.ceil(west / lngStep) * lngStep;
+    for (let lng = firstLng; lng <= east; lng += lngStep) {
+      coordGridLayer.addLayer(L.polyline([[south, lng], [north, lng]], lineOpts));
+      coordGridLayer.addLayer(
+        L.marker([north, lng], { icon: coordGridLabel(lng.toFixed(5)), interactive: false, keyboard: false })
+      );
+    }
+  }
+
+  coordGridToggleBtn?.addEventListener("click", () => {
+    coordGridOn = !coordGridOn;
+    coordGridToggleBtn.classList.toggle("is-active", coordGridOn);
+    renderCoordGrid();
+  });
+
   // === Full-screen map view ===
   async function openMapView(mapId) {
     const def = MAP_DEFS.find((m) => m.id === mapId);
@@ -555,6 +623,7 @@
     // reflects whoever is currently logged in without needing a reload.
     const session = window.DD.auth && window.DD.auth.getSession();
     setupToggleBtn?.classList.toggle("hide", !(session && session.isAdmin));
+    coordGridToggleBtn?.classList.toggle("hide", !(session && session.isAdmin));
     setSetupMode(false);
 
     mapOverlay?.classList.add("is-open");
@@ -585,8 +654,10 @@
       }).addTo(mapLeaflet);
       permanentLayer = L.layerGroup().addTo(mapLeaflet);
       permanentPathsLayer = L.layerGroup().addTo(mapLeaflet);
+      coordGridLayer = L.layerGroup().addTo(mapLeaflet);
       mapLeaflet.on("click", handleMapClick);
       mapLeaflet.on("zoomend", rescaleAllPins);
+      mapLeaflet.on("moveend zoomend", renderCoordGrid);
       // Only a real user-initiated drag fires 'dragstart' -- programmatic
       // setView calls (follow-mode re-centering, search) don't, so this
       // can't fight with either of those.
@@ -611,6 +682,9 @@
     setSetupMode(false);
     stopLocationFollow();
     currentMapCenter = null;
+    coordGridOn = false;
+    coordGridToggleBtn?.classList.remove("is-active");
+    coordGridLayer?.clearLayers();
     mapOverlay?.classList.remove("is-open");
     mapOverlay?.setAttribute("aria-hidden", "true");
   }

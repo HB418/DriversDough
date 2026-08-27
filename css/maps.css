@@ -113,6 +113,30 @@
   white-space: nowrap;
   padding: 0 0.4rem;
 }
+.dd-map-grid-toggle {
+  border: 2px solid var(--dd-sky);
+  background: #fff;
+  color: var(--dd-sky);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.7rem;
+  border-radius: 6px;
+}
+.dd-map-grid-toggle.is-active {
+  background: var(--dd-sky);
+  color: #fff;
+}
+:root[data-theme="dark"] .dd-map-grid-toggle {
+  background: transparent;
+  border-color: var(--dd-amber);
+  color: var(--dd-amber);
+}
+:root[data-theme="dark"] .dd-map-grid-toggle.is-active {
+  background: var(--dd-amber);
+  color: #1f2227;
+}
+
 .dd-map-setup-toggle {
   border: 2px solid var(--dd-sky);
   background: #fff;
@@ -248,6 +272,20 @@
   background-image:
     repeating-linear-gradient(to right, rgba(255, 255, 255, 0.55) 0 1px, transparent 1px 40px),
     repeating-linear-gradient(to bottom, rgba(255, 255, 255, 0.55) 0 1px, transparent 1px 40px);
+}
+
+/* === Coordinate grid (admin, "Grid" toggle) ===
+   A live lat/lng graticule with each line labeled its actual coordinate --
+   for reading real coordinates back off a screenshot when Claude can't
+   reach the live map data directly. Light-but-visible: white text with a
+   dark halo so it stays readable over both light and dark patches of
+   satellite imagery, same idea as the path badges' white border. */
+.dd-coord-grid-label {
+  color: #fff;
+  font-weight: 700;
+  font-size: 11px;
+  white-space: nowrap;
+  text-shadow: 0 0 3px #000, 0 0 3px #000, 1px 1px 1px #000;
 }
 
 /* === Pin marker (Leaflet divIcon contents) ===
