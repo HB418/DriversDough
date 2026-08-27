@@ -934,23 +934,36 @@
   // center-to-center at zoom 19, barely more than their own glyph width.
   const FLOW_LETTER_BASE_SPACING_METERS = 4.2;
   const FLOW_LETTER_BASE_FONT_PX = 13;
+  // Whether the whole road's repeated text reads "forwards" (in the
+  // direction of increasing distance along the route, i.e. entrance ->
+  // junction) or needs flipping to stay upright is decided ONCE for the
+  // entire road, from its overall net direction (start point to end
+  // point) -- not per repetition and not per letter. Deciding it per
+  // repetition (an earlier version of this) let the 25%/50%/75% instances
+  // disagree with each other whenever the road's LOCAL heading at one of
+  // those points happened to fall on the other side of +/-90 degrees from
+  // the road's overall direction, even though the road itself wasn't
+  // actually bending that sharply there -- that's what read as one
+  // instance ("the very first IN ROAD") facing backwards relative to the
+  // other two, like the road was headed out instead of in.
+  function overallRouteFlip(points) {
+    const first = points[0];
+    const last = points[points.length - 1];
+    const { latM, lngM } = metersPerDegreeAt(first.lat);
+    const dxM = (last.lng - first.lng) * lngM;
+    const dyM = (last.lat - first.lat) * latM;
+    const angle = (Math.atan2(-dyM, dxM) * 180) / Math.PI;
+    return angle > 90 || angle < -90;
+  }
   // Lays `text` down letter-by-letter, centered on the given fraction of
   // the route, each letter placed and angled to follow the road's local
   // direction right where it lands (spaces just advance the cursor with no
   // glyph) -- so it reads like a road name painted on the road itself, not
-  // a block label floating beside it.
-  //
-  // Whether the word reads "forwards" (in the direction of increasing
-  // distance along the route) or needs flipping to stay upright is decided
-  // ONCE per word, from the direction at its center point -- not per
-  // letter. Deciding it per letter (the first version of this) let one
-  // letter mid-word flip upside down on its own whenever the road's local
-  // heading wobbled past +/-90 degrees right at that letter, which is
-  // exactly what read as "written backwards" sometimes. When a flip IS
-  // needed, both the letter order and each letter's own angle get flipped
-  // together, so the word stays readable instead of just going upside
-  // down in place.
-  function renderFlowingRoadText(text, points, segLens, total, centerFraction, layer, scale) {
+  // a block label floating beside it. `flip` (see overallRouteFlip above)
+  // is shared across every repetition on the same road so they all read
+  // the same direction; each letter's own angle still follows the local
+  // curve, only the flip/order decision is fixed road-wide.
+  function renderFlowingRoadText(text, points, segLens, total, centerFraction, layer, scale, flip) {
     // Ground-meter spacing grows as the view zooms out (scale shrinks) so
     // the on-screen gap between letters stays roughly constant instead of
     // collapsing -- the opposite direction from font size below, which
@@ -960,8 +973,6 @@
     const fontPx = Math.max(9, Math.round(FLOW_LETTER_BASE_FONT_PX * scale));
     const centerDistance = total * centerFraction;
     const startDistance = centerDistance - ((text.length - 1) * letterSpacingMeters) / 2;
-    const centerAngle = pointAndBearingAtDistance(points, segLens, total, centerDistance).angle;
-    const flip = centerAngle > 90 || centerAngle < -90;
     for (let i = 0; i < text.length; i++) {
       const ch = flip ? text[text.length - 1 - i] : text[i];
       if (ch === " ") continue;
@@ -1074,8 +1085,9 @@
 
     const { segLens, total } = routeSegLens(centerline);
     const scale = scaleForZoom(mapLeaflet);
+    const flip = overallRouteFlip(centerline);
     [0.25, 0.5, 0.75].forEach((frac) => {
-      renderFlowingRoadText("IN ROAD", centerline, segLens, total, frac, entranceRoadLabelsLayer, scale);
+      renderFlowingRoadText("IN ROAD", centerline, segLens, total, frac, entranceRoadLabelsLayer, scale, flip);
     });
   }
 
