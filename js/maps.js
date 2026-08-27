@@ -802,10 +802,12 @@
     }
     return { segLens, total };
   }
-  // The point AND local direction (as a CSS-rotate-ready degrees value) at
-  // a given absolute distance (meters, clamped to the route's length) along
+  // The point AND local direction (as a CSS-rotate-ready degrees value,
+  // RAW -- not normalized to stay right-side-up, see renderFlowingRoadText
+  // for why that's decided once per word rather than per letter) at a
+  // given absolute distance (meters, clamped to the route's length) along
   // a multi-point route -- used to lay individual letters down flowing
-  // along the road, each one rotated to match the road's direction right
+  // along the road, each one angled to match the road's direction right
   // where it sits, the way a road name painted on pavement (or a curved
   // road label on a map) follows the road instead of sitting next to it
   // as a flat block of text.
@@ -826,12 +828,7 @@
         // Screen x = east, screen y = -north (screen y grows downward) --
         // atan2(screenY, screenX) is then the CSS rotate() angle (degrees,
         // clockwise) that points a horizontal glyph along this segment.
-        let angle = (Math.atan2(-dyM, dxM) * 180) / Math.PI;
-        // Keep text right-side-up (never upside down) by flipping any
-        // angle more than 90 degrees from horizontal back the other way --
-        // same trick real map renderers use for curved road labels.
-        if (angle > 90) angle -= 180;
-        else if (angle < -90) angle += 180;
+        const angle = (Math.atan2(-dyM, dxM) * 180) / Math.PI;
         return { lat, lng, angle };
       }
       remaining -= len;
@@ -867,19 +864,31 @@
     document.body.appendChild(svg);
   }
 
+  // Both icons below are anchored to their lat/lng with `translate(-50%,
+  // -50%)` on the inner span, not Leaflet's iconAnchor -- these render at
+  // whatever size their text happens to be (a whole word for ENTRANCE, a
+  // single glyph per flow letter), so centering on the actual box the
+  // browser lays out is more reliable than guessing a fixed pixel anchor.
+  // Without this the label's top-left corner (not its center) sat on the
+  // target point, which is what was making it land off to one side of
+  // where it was supposed to be.
   function makeEntranceLabelIcon(text) {
     return L.divIcon({
-      html: '<span class="dd-entrance-label">' + text + "</span>",
+      html: '<span class="dd-entrance-label" style="transform: translate(-50%, -50%)">' + text + "</span>",
       className: "dd-path-div-icon",
       iconSize: null,
     });
   }
-  // One rotated letter, positioned/angled to sit flush on the road at that
-  // exact point -- see pointAndBearingAtDistance above.
+  // One letter, positioned/angled to sit flush on the road at that exact
+  // point -- see pointAndBearingAtDistance above. translate(-50%,-50%)
+  // centers the glyph on its point BEFORE the rotate (CSS transform
+  // functions compose right-to-left against the element's own box), so it
+  // spins in place around where it's actually sitting rather than around
+  // its top-left corner.
   function makeFlowLetterIcon(char, angleDeg) {
     return L.divIcon({
       html:
-        '<span class="dd-road-flow-letter" style="transform: rotate(' +
+        '<span class="dd-road-flow-letter" style="transform: translate(-50%, -50%) rotate(' +
         angleDeg +
         'deg)">' +
         char +
@@ -889,21 +898,35 @@
     });
   }
   // Lays `text` down letter-by-letter, centered on the given fraction of
-  // the route, each letter placed and rotated to follow the road's local
+  // the route, each letter placed and angled to follow the road's local
   // direction right where it lands (spaces just advance the cursor with no
-  // glyph) -- so it reads like a road name painted on the road itself,
-  // not a block label floating beside it.
+  // glyph) -- so it reads like a road name painted on the road itself, not
+  // a block label floating beside it.
+  //
+  // Whether the word reads "forwards" (in the direction of increasing
+  // distance along the route) or needs flipping to stay upright is decided
+  // ONCE per word, from the direction at its center point -- not per
+  // letter. Deciding it per letter (the first version of this) let one
+  // letter mid-word flip upside down on its own whenever the road's local
+  // heading wobbled past +/-90 degrees right at that letter, which is
+  // exactly what read as "written backwards" sometimes. When a flip IS
+  // needed, both the letter order and each letter's own angle get flipped
+  // together, so the word stays readable instead of just going upside
+  // down in place.
   function renderFlowingRoadText(text, points, segLens, total, centerFraction, layer) {
     const LETTER_SPACING_METERS = 2.6;
     const centerDistance = total * centerFraction;
     const startDistance = centerDistance - ((text.length - 1) * LETTER_SPACING_METERS) / 2;
+    const centerAngle = pointAndBearingAtDistance(points, segLens, total, centerDistance).angle;
+    const flip = centerAngle > 90 || centerAngle < -90;
     for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
+      const ch = flip ? text[text.length - 1 - i] : text[i];
       if (ch === " ") continue;
       const distance = startDistance + i * LETTER_SPACING_METERS;
       const { lat, lng, angle } = pointAndBearingAtDistance(points, segLens, total, distance);
+      const finalAngle = flip ? angle + 180 : angle;
       layer.addLayer(
-        L.marker([lat, lng], { icon: makeFlowLetterIcon(ch, angle), interactive: false, keyboard: false })
+        L.marker([lat, lng], { icon: makeFlowLetterIcon(ch, finalAngle), interactive: false, keyboard: false })
       );
     }
   }
@@ -946,10 +969,10 @@
     // "ENTRANCE" belongs at route 1's free end -- whichever endpoint of
     // route 1 did NOT get used to join onto route 2. combinePointSequences
     // always puts route 1 first in `combined` (reversed if needed so its
-    // free end leads), so combined[0] IS that free end. Nudged a few
-    // meters west ("left") and in close to the road per Heath's feedback
-    // that it was landing barely at the actual entrance.
-    const entranceLabelAt = offsetLatLng(combined[0], -4, 6);
+    // free end leads), so combined[0] IS that free end. Nudged west
+    // ("left") and further north per Heath's feedback on the last two
+    // rounds.
+    const entranceLabelAt = offsetLatLng(combined[0], -4, 14);
     entranceRoadLabelsLayer.addLayer(
       L.marker([entranceLabelAt.lat, entranceLabelAt.lng], {
         icon: makeEntranceLabelIcon("ENTRANCE"),
