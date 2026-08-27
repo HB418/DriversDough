@@ -856,6 +856,28 @@
     }
     return pieces;
   }
+  // The road's own true left/right edge AT a closestPointOnPolyline() hit
+  // -- i.e. exactly the corners buildRibbonPieces would draw there, using
+  // the ORIGINAL segment's direction (hit.point sits ON that segment, so
+  // the direction is unchanged) and the width interpolated the same way
+  // insertPointOnPolyline's companion argument interpolates it. This is
+  // what an alley's own ribbon needs to be bridged onto -- see
+  // snapAlleyToRoads below for why: inserting a shared VERTEX into the
+  // road's polyline keeps the road itself solid straight through that
+  // point, but the alley's own ribbon is a completely separate set of
+  // polygons ending in its own flat cap at that same point, angled
+  // however the alley happens to run -- nothing so far has ever made
+  // that cap actually touch the road's surface.
+  function crossSectionAtHit(points, hit, widths) {
+    const w = widthsForPoints(points, widths);
+    const a = points[hit.segmentIndex];
+    const b = points[hit.segmentIndex + 1];
+    const wA = w[hit.segmentIndex];
+    const wB = w[hit.segmentIndex + 1];
+    const hitWidth = { left: wA.left + (wB.left - wA.left) * hit.t, right: wA.right + (wB.right - wA.right) * hit.t };
+    const quad = segmentQuad(a, wA, hit.point, hitWidth);
+    return { left: quad.bLeft, right: quad.bRight };
+  }
   // Same wedge-filling idea as buildRibbonPieces' interior joints, but
   // for stitching two SEPARATE roads' ribbons together at a shared end
   // vertex (In Road's far end / Out Road's near end) -- each road can
@@ -1381,7 +1403,7 @@
   // alley + updated in/out road polylines; callers thread the updated
   // road polylines into the next alley so multiple alleys on the same
   // road all end up as real vertices on it.
-  function snapAlleyToRoads(alleyPoints, inRoadPolyline, outRoadPolyline, inRoadWidths) {
+  function snapAlleyToRoads(alleyPoints, inRoadPolyline, outRoadPolyline, inRoadWidths, outRoadWidths) {
     const start = alleyPoints[0];
     const end = alleyPoints[alleyPoints.length - 1];
     const hitStartIn = closestPointOnPolyline(inRoadPolyline, start, ALLEY_JUNCTION_GUARD_METERS);
@@ -1394,22 +1416,34 @@
     const startToIn = hitStartIn.distM + hitEndOut.distM;
     const endToIn = hitEndIn.distM + hitStartOut.distM;
     const newAlleyPoints = alleyPoints.slice();
-    let inHit, outHit;
+    let inHit, outHit, inAtStart;
     if (startToIn <= endToIn) {
       inHit = hitStartIn;
       outHit = hitEndOut;
       newAlleyPoints[0] = inHit.point;
       newAlleyPoints[newAlleyPoints.length - 1] = outHit.point;
+      inAtStart = true;
     } else {
       inHit = hitEndIn;
       outHit = hitStartOut;
       newAlleyPoints[newAlleyPoints.length - 1] = inHit.point;
       newAlleyPoints[0] = outHit.point;
+      inAtStart = false;
     }
+    // The road's own true edge at each connection point -- BEFORE either
+    // insertion, since inHit/outHit's segmentIndex refers to these
+    // original arrays. See crossSectionAtHit's own comment for why the
+    // alley needs this at all (a shared vertex alone doesn't visually
+    // connect two separately-built ribbons).
+    const inCrossSection = crossSectionAtHit(inRoadPolyline, inHit, inRoadWidths);
+    const outCrossSection = crossSectionAtHit(outRoadPolyline, outHit, outRoadWidths);
     const inInsert = insertPointOnPolyline(inRoadPolyline, inHit, inRoadWidths);
     const outInsert = insertPointOnPolyline(outRoadPolyline, outHit);
     return {
       alleyPoints: newAlleyPoints,
+      inAtStart,
+      inCrossSection,
+      outCrossSection,
       inRoadPolyline: inInsert.points,
       inRoadWidths: inInsert.companion,
       outRoadPolyline: outInsert.points,
@@ -1505,15 +1539,28 @@
     // junction. Processed one at a time so a later alley snaps against
     // whatever the roads look like after any earlier alley already
     // touched them.
+    const OUT_ROAD_WIDTHS = { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS };
     const alleysToDraw = [];
     if (combined && outRoadPoints) {
       ALLEY_DEFS.forEach((def) => {
         if (!hasAlleyRoad(rec, def.pathIndex)) return;
-        const snapped = snapAlleyToRoads(rec.paths[def.pathIndex].points, combined, outRoadPoints, combinedWidths);
+        const snapped = snapAlleyToRoads(
+          rec.paths[def.pathIndex].points,
+          combined,
+          outRoadPoints,
+          combinedWidths,
+          OUT_ROAD_WIDTHS
+        );
         combined = snapped.inRoadPolyline;
         combinedWidths = snapped.inRoadWidths;
         outRoadPoints = snapped.outRoadPolyline;
-        alleysToDraw.push({ points: snapped.alleyPoints, label: def.label });
+        alleysToDraw.push({
+          points: snapped.alleyPoints,
+          label: def.label,
+          inAtStart: snapped.inAtStart,
+          inCrossSection: snapped.inCrossSection,
+          outCrossSection: snapped.outCrossSection,
+        });
       });
     }
 
@@ -1576,6 +1623,23 @@
         fillLayer: entranceRoadFillLayer,
         labelsLayer: entranceRoadLabelsLayer,
       });
+      // Bridge the alley's own two end caps onto the road's real surface
+      // at each connection point. Inserting a shared vertex into the
+      // road's polyline (snapAlleyToRoads above) keeps the ROAD itself
+      // solid straight through that point, but the alley's own ribbon is
+      // a completely separate set of polygons ending in its own flat cap
+      // at that same coordinate, angled however the alley happens to run
+      // -- not the road's local cross-section. Left untouched, the two
+      // ribbons only ever meet at a single point, leaving a real
+      // triangular gap. See crossSectionAtHit's comment for the full
+      // reasoning.
+      const alleyWidths = { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS };
+      const alleyStartEdge = ribbonEdgeAtEnd(alley.points, true, alleyWidths);
+      const alleyEndEdge = ribbonEdgeAtEnd(alley.points, false, alleyWidths);
+      const startCrossSection = alley.inAtStart ? alley.inCrossSection : alley.outCrossSection;
+      const endCrossSection = alley.inAtStart ? alley.outCrossSection : alley.inCrossSection;
+      fillRibbonJunction(alleyStartEdge, startCrossSection, entranceRoadFillLayer);
+      fillRibbonJunction(alleyEndEdge, endCrossSection, entranceRoadFillLayer);
     });
 
     // In Road's real far end and Out Road's real near end are two
