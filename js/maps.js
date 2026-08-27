@@ -1008,19 +1008,18 @@
   const OUT_ROAD_HALF_WIDTH_METERS = 3.0;
 
   // Every road in this feature ends up the same 6m total girth (entrance
-  // road: 1.75+4.25; out road/alleys: 3+3), which is what lets one shared
-  // "junction patch" radius work everywhere two ribbons are stitched
-  // together end-to-end or mid-segment (see drawJunctionPatch below) --
-  // computed from the real width constants rather than hardcoded so it
-  // stays correct if those ever change. bufferLineToRibbon has no true
-  // miter/bevel join, so wherever two independently-drawn ribbons meet at
-  // an angle, the flat perpendicular cut at each one's end can leave a
-  // sliver of bare ground -- reading as a "cut off" road end, or as a
-  // "split" where an alley meets a road mid-segment. A small filled disc
-  // dropped on top of the connection point, sized to fully cover both
-  // ribbons' width at that point regardless of the angle between them,
-  // papers over that gap cheaply without needing real miter geometry.
-  const JUNCTION_PATCH_RADIUS_METERS =
+  // road: 1.75+4.25; out road/alleys: 3+3) -- this is how far an alley
+  // connection has to land from a road's own endpoint before it's
+  // allowed to insert a brand new vertex there (see closestPointOnPolyline's
+  // endGuardMeters). Any closer and it snaps directly onto the existing
+  // endpoint instead: that endpoint is usually ALSO the road's junction
+  // with another road, and inserting a too-close extra vertex right next
+  // to it was replacing the junction's real, long-run direction with a
+  // short, differently-angled stub -- which is what was actually cutting
+  // the road off right where two roads met. Computed from the real width
+  // constants (roughly one road-width) rather than hardcoded so it stays
+  // sane if those ever change.
+  const ALLEY_JUNCTION_GUARD_METERS =
     Math.max(ENTRANCE_ROAD_INSIDE_METERS + ENTRANCE_ROAD_OUTSIDE_METERS, OUT_ROAD_HALF_WIDTH_METERS * 2) / 2 + 0.5;
 
   // Amazon Campground specific: waypoint routes 1 and 2 are one continuous
@@ -1081,9 +1080,22 @@
     const outsideMeters = opts.outsideMeters;
     const ribbon = bufferLineToRibbon(points, insideMeters, outsideMeters);
     if (ribbon.length) {
+      // No stroke (weight: 0) -- every road segment (In Road, Out Road,
+      // each alley) is its own separate polygon that only shares vertices
+      // with its neighbors at a junction, not merged into one shape. A
+      // stroked border around each one draws its own line right along
+      // that shared edge too, and wherever 2-3 of these polygons converge
+      // (every road junction) their borders overlap/cross into exactly
+      // the ring-like artifact Heath flagged as "weird circles" -- worse
+      // once the junction-patch circles (their own even more visible
+      // circular stroke) piled another ring on top of that. Dropping the
+      // stroke entirely removes the seam lines; the matching dirt-pattern
+      // fill on both sides of a shared edge already reads as one
+      // continuous road with no visible border to draw in the first
+      // place.
       const ribbonPoly = L.polygon(
         ribbon.map((p) => [p.lat, p.lng]),
-        { color: "#6b4a2f", weight: 1, opacity: 0.5, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 0.95, interactive: false }
+        { stroke: false, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 0.95, interactive: false }
       );
       opts.fillLayer.addLayer(ribbonPoly);
     }
@@ -1114,24 +1126,6 @@
     labelFractions.forEach((frac) => {
       renderFlowingRoadText(opts.labelText, centerline, segLens, total, frac, opts.labelsLayer, scale, flip);
     });
-  }
-  // Drops a small filled dirt-textured disc on top of a spot where two
-  // ribbons are stitched together (see JUNCTION_PATCH_RADIUS_METERS above
-  // for why) -- purely cosmetic, papering over the flat-cut-join gap, so
-  // callers just fire-and-forget this after both ribbons on either side
-  // of the junction are already in the fill layer (added last = drawn on
-  // top).
-  function drawJunctionPatch(point, fillLayer) {
-    const patch = L.circle([point.lat, point.lng], {
-      radius: JUNCTION_PATCH_RADIUS_METERS,
-      color: "#6b4a2f",
-      weight: 1,
-      opacity: 0.5,
-      fillColor: "url(#dd-dirt-pattern)",
-      fillOpacity: 0.95,
-      interactive: false,
-    });
-    fillLayer.addLayer(patch);
   }
   // Merges/drops points that sit closer together than `minMeters`, always
   // keeping the first and last points untouched -- defensive cleanup for
@@ -1256,10 +1250,10 @@
   function snapAlleyToRoads(alleyPoints, inRoadPolyline, outRoadPolyline) {
     const start = alleyPoints[0];
     const end = alleyPoints[alleyPoints.length - 1];
-    const hitStartIn = closestPointOnPolyline(inRoadPolyline, start, JUNCTION_PATCH_RADIUS_METERS);
-    const hitEndIn = closestPointOnPolyline(inRoadPolyline, end, JUNCTION_PATCH_RADIUS_METERS);
-    const hitStartOut = closestPointOnPolyline(outRoadPolyline, start, JUNCTION_PATCH_RADIUS_METERS);
-    const hitEndOut = closestPointOnPolyline(outRoadPolyline, end, JUNCTION_PATCH_RADIUS_METERS);
+    const hitStartIn = closestPointOnPolyline(inRoadPolyline, start, ALLEY_JUNCTION_GUARD_METERS);
+    const hitEndIn = closestPointOnPolyline(inRoadPolyline, end, ALLEY_JUNCTION_GUARD_METERS);
+    const hitStartOut = closestPointOnPolyline(outRoadPolyline, start, ALLEY_JUNCTION_GUARD_METERS);
+    const hitEndOut = closestPointOnPolyline(outRoadPolyline, end, ALLEY_JUNCTION_GUARD_METERS);
     // Two ways to pair the alley's two ends with the two roads -- pick
     // whichever pairing has the smaller total gap, rather than assuming
     // the alley's stored Start is always the In Road end.
@@ -1324,11 +1318,6 @@
 
     let combined = getAmazonEntranceCombinedRoute(rec);
     let outRoadPoints = hasOutRoad(rec) ? rec.paths[2].points : null;
-    // Every place two ribbons get stitched together gets a cosmetic patch
-    // circle dropped on top afterward (see drawJunctionPatch) -- collected
-    // here as they're discovered, drawn once all the roads themselves are
-    // in the fill layer so the patches sit on top of both ribbons.
-    const junctionPoints = [];
 
     // Heath: "in road should connect to out road ... where it would
     // juxtapose" -- route 2's far end and route 3's near end are two
@@ -1355,7 +1344,6 @@
       };
       combined = combined.slice(0, -1).concat([junction]);
       outRoadPoints = [junction].concat(outRoadPoints.slice(1));
-      junctionPoints.push(junction);
     }
 
     // Alleys connect into the MIDDLE of In Road/Out Road, not just their
@@ -1374,7 +1362,6 @@
         combined = snapped.inRoadPolyline;
         outRoadPoints = snapped.outRoadPolyline;
         alleysToDraw.push({ points: snapped.alleyPoints, label: def.label });
-        junctionPoints.push(snapped.inPoint, snapped.outPoint);
       });
     }
 
@@ -1435,11 +1422,6 @@
         labelsLayer: entranceRoadLabelsLayer,
       });
     });
-
-    // Patches go on last, on top of every ribbon, so they actually cover
-    // the joins instead of getting drawn over by whichever road happened
-    // to render after them.
-    junctionPoints.forEach((point) => drawJunctionPatch(point, entranceRoadFillLayer));
   }
 
   function renderPermanentPaths() {
