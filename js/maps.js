@@ -1403,14 +1403,6 @@
     // right at the real junction instead of stopping short of each other.
     if (combined && outRoadPoints) {
       outRoadPoints = orientTowardPoint(outRoadPoints, combined[combined.length - 1]);
-      // Heath: ignore Out Road's own first placed waypoint entirely --
-      // it's the one right next to where it meets In Road, and dropping
-      // it (keeping the rest of the route intact) means the junction end
-      // is built from Out Road's real, further-out heading instead of
-      // whatever that first hand-placed point happened to do. Only if
-      // there's nothing left to drop (a 2-point Out Road) does this get
-      // skipped, since a road needs at least 2 points to draw at all.
-      if (outRoadPoints.length > 2) outRoadPoints = outRoadPoints.slice(1);
       const entranceFarEnd = combined[combined.length - 1];
       const outRoadNearEnd = outRoadPoints[0];
       const junction = {
@@ -1522,11 +1514,21 @@
       if (editingPathId === path.id) return;
       // Routes 1 and 2 are the entrance road, route 3 is the out road,
       // and 4-7 are the alleys -- their dirt-road overlays (below) are
-      // their visual now, so skip their own colored line + S/E badges
-      // entirely rather than drawing both on top of each other.
-      if (hideAsEntranceRoad && pathIndex < 2) return;
-      if (hideAsOutRoad && pathIndex === 2) return;
-      if (hasAlleyRoad(rec, pathIndex)) return;
+      // their visual now, so normally skip their own colored line + S/E
+      // badges entirely rather than drawing both on top of each other.
+      //
+      // BUT NOT in Setup Mode: this used to hide them unconditionally,
+      // which meant once a path became part of a road overlay there was
+      // no longer any way to see its real pins OR click into editing it
+      // ever again -- the click target that starts an edit was exactly
+      // what got hidden. Setup Mode is specifically the admin view for
+      // inspecting/managing the real saved data, so it always shows the
+      // real pins for every path, road-covered or not.
+      if (!pathsInteractive) {
+        if (hideAsEntranceRoad && pathIndex < 2) return;
+        if (hideAsOutRoad && pathIndex === 2) return;
+        if (hasAlleyRoad(rec, pathIndex)) return;
+      }
       const pathNumber = pathIndex + 1;
       const pathColor = pathColorFor(pathIndex);
       const latlngs = path.points.map((p) => [p.lat, p.lng]);
