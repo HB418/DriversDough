@@ -1133,6 +1133,58 @@
     });
     fillLayer.addLayer(patch);
   }
+  // The exact left/right ribbon-edge points bufferLineToRibbon would
+  // produce at one END of a route (index 0 if `atStart`, otherwise the
+  // last index) -- same prev/next-neighbor tangent math as that
+  // function's per-vertex loop, just pulled out so a junction bridge (see
+  // buildEndToEndBridge below) can line up EXACTLY with the real ribbon
+  // edge there instead of guessing at a coverage radius.
+  function ribbonEdgeAtEnd(points, atStart, leftWidthMeters, rightWidthMeters) {
+    const i = atStart ? 0 : points.length - 1;
+    const prev = points[i - 1] || points[i];
+    const next = points[i + 1] || points[i];
+    const { latM, lngM } = metersPerDegreeAt(points[i].lat);
+    const dxM = (next.lng - prev.lng) * lngM;
+    const dyM = (next.lat - prev.lat) * latM;
+    const len = Math.sqrt(dxM * dxM + dyM * dyM) || 1;
+    const nx = -dyM / len;
+    const ny = dxM / len;
+    return {
+      left: offsetLatLng(points[i], nx * leftWidthMeters, ny * leftWidthMeters),
+      right: offsetLatLng(points[i], -nx * rightWidthMeters, -ny * rightWidthMeters),
+    };
+  }
+  // Fills the exact gap between two ribbons' end caps with a quadrilateral
+  // built from their real edge points (see ribbonEdgeAtEnd) -- unlike
+  // drawJunctionPatch's fixed-radius circle, this closes the join no
+  // matter how sharp the angle between the two roads is or how far apart
+  // an asymmetric width pushes one ribbon's true edge from the other's,
+  // because it's built from the actual corners instead of a guessed
+  // coverage radius around the (possibly off-center) junction point.
+  function drawEndToEndBridge(edgeA, edgeB, fillLayer) {
+    // Two ways to pair the 2+2 corners into a non-crossed quad -- same
+    // smaller-total-distance trick used elsewhere in this file (e.g.
+    // combinePointSequences) to pick the pairing that doesn't bowtie.
+    const straight = metersBetween(edgeA.left, edgeB.left) + metersBetween(edgeA.right, edgeB.right);
+    const crossed = metersBetween(edgeA.left, edgeB.right) + metersBetween(edgeA.right, edgeB.left);
+    const quad =
+      straight <= crossed
+        ? [edgeA.left, edgeA.right, edgeB.right, edgeB.left]
+        : [edgeA.left, edgeA.right, edgeB.left, edgeB.right];
+    fillLayer.addLayer(
+      L.polygon(
+        quad.map((p) => [p.lat, p.lng]),
+        {
+          color: "#6b4a2f",
+          weight: 1,
+          opacity: 0.5,
+          fillColor: "url(#dd-dirt-pattern)",
+          fillOpacity: 0.95,
+          interactive: false,
+        }
+      )
+    );
+  }
   // Merges/drops points that sit closer together than `minMeters`, always
   // keeping the first and last points untouched -- defensive cleanup for
   // near-duplicate points that can end up sitting right next to each
@@ -1318,7 +1370,13 @@
       };
       combined = combined.slice(0, -1).concat([junction]);
       outRoadPoints = [junction].concat(outRoadPoints.slice(1));
-      junctionPoints.push(junction);
+      // Not pushed into junctionPoints/patched with a circle like the
+      // alley connections below -- this junction gets its own exact
+      // bridge quad (see the drawEndToEndBridge call further down),
+      // because the entrance road's asymmetric width means its real
+      // pavement center doesn't actually sit on this `junction` point,
+      // so a fixed-radius circle centered here couldn't be sized
+      // reliably to always cover the real gap.
     }
 
     // Alleys connect into the MIDDLE of In Road/Out Road, not just their
@@ -1399,9 +1457,21 @@
       });
     });
 
-    // Patches go on last, on top of every ribbon, so they actually cover
-    // the joins instead of getting drawn over by whichever road happened
-    // to render after them.
+    // The In Road <-> Out Road junction gets an exact bridge quad (built
+    // from the real final ribbon-edge points, post-dedupe/post-alley-
+    // insertion -- same arrays drawTexturedRoad above just used) instead
+    // of a guessed-radius circle, since In Road's asymmetric width means
+    // its true pavement edge can sit meters away from the `junction`
+    // point a circle would be centered on.
+    if (combined && outRoadPoints) {
+      const entranceEdge = ribbonEdgeAtEnd(combined, false, ENTRANCE_ROAD_INSIDE_METERS, ENTRANCE_ROAD_OUTSIDE_METERS);
+      const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, OUT_ROAD_HALF_WIDTH_METERS, OUT_ROAD_HALF_WIDTH_METERS);
+      drawEndToEndBridge(entranceEdge, outRoadEdge, entranceRoadFillLayer);
+    }
+
+    // Alley connection patches go on last, on top of every ribbon, so
+    // they actually cover the joins instead of getting drawn over by
+    // whichever road happened to render after them.
     junctionPoints.forEach((point) => drawJunctionPatch(point, entranceRoadFillLayer));
   }
 
