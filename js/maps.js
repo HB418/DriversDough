@@ -778,23 +778,100 @@
   // that direction of travel (walking due east, "left" is north) -- that's
   // exactly the (nx, ny) below, so `left` uses +(nx,ny) and `right` uses
   // the opposite.
-  function bufferLineToRibbon(points, leftWidthMeters, rightWidthMeters) {
+  // Builds a road's dirt-textured ribbon as a set of small, individually
+  // simple (non-self-intersecting) polygons instead of one continuous
+  // outline -- one quad per segment, plus a small triangle on each side
+  // at every interior vertex to fill the wedge between that segment and
+  // the next. Safe to overlap freely since the ribbon polygons are drawn
+  // with no stroke (see drawTexturedRoad) -- same fill on both sides of
+  // any seam just reads as one continuous surface.
+  //
+  // This replaces an earlier version that built ONE polygon by offsetting
+  // every vertex using the AVERAGED direction of its two neighboring
+  // segments. That's a fine approximation on a gentle curve, but at a
+  // genuinely sharp turn (like Alley Four's turnaround point) the
+  // averaged direction can point well off from either actual segment, so
+  // the offset point undershoots the real corner -- and the polygon's own
+  // edges cross over each other right at that vertex. Rendered with the
+  // SVG default even-odd fill rule, that self-crossing shows up as a
+  // visible triangular NOTCH cut into the road right at the point of the
+  // bend -- confirmed on Heath's live map. Building each segment as its
+  // own simple quad, anchored at the two real endpoints rather than an
+  // averaged direction, can't produce that self-crossing regardless of
+  // how sharp the turn is; the per-vertex fan triangle then closes the
+  // gap between adjacent segments' quads without reintroducing it.
+  // One segment's own left/right cross-section at both of its endpoints
+  // -- the shared building block for buildRibbonPieces (below) and for
+  // stitching two separate roads together at fillRibbonJunction.
+  function segmentQuad(a, b, leftWidthMeters, rightWidthMeters) {
+    const { latM, lngM } = metersPerDegreeAt(a.lat);
+    const dxM = (b.lng - a.lng) * lngM;
+    const dyM = (b.lat - a.lat) * latM;
+    const len = Math.sqrt(dxM * dxM + dyM * dyM) || 1;
+    const nx = -dyM / len;
+    const ny = dxM / len;
+    return {
+      aLeft: offsetLatLng(a, nx * leftWidthMeters, ny * leftWidthMeters),
+      aRight: offsetLatLng(a, -nx * rightWidthMeters, -ny * rightWidthMeters),
+      bLeft: offsetLatLng(b, nx * leftWidthMeters, ny * leftWidthMeters),
+      bRight: offsetLatLng(b, -nx * rightWidthMeters, -ny * rightWidthMeters),
+    };
+  }
+  function buildRibbonPieces(points, leftWidthMeters, rightWidthMeters) {
     if (points.length < 2) return [];
-    const left = [];
-    const right = [];
-    for (let i = 0; i < points.length; i++) {
-      const prev = points[i - 1] || points[i];
-      const next = points[i + 1] || points[i];
-      const { latM, lngM } = metersPerDegreeAt(points[i].lat);
-      const dxM = (next.lng - prev.lng) * lngM;
-      const dyM = (next.lat - prev.lat) * latM;
-      const len = Math.sqrt(dxM * dxM + dyM * dyM) || 1;
-      const nx = -dyM / len;
-      const ny = dxM / len;
-      left.push(offsetLatLng(points[i], nx * leftWidthMeters, ny * leftWidthMeters));
-      right.push(offsetLatLng(points[i], -nx * rightWidthMeters, -ny * rightWidthMeters));
+    const quads = [];
+    const pieces = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      const quad = segmentQuad(points[i], points[i + 1], leftWidthMeters, rightWidthMeters);
+      quads.push(quad);
+      pieces.push([quad.aLeft, quad.bLeft, quad.bRight, quad.aRight]);
     }
-    return left.concat(right.reverse());
+    for (let i = 1; i < quads.length; i++) {
+      const prev = quads[i - 1];
+      const cur = quads[i];
+      const vertex = points[i];
+      // Each triangle is anchored at the real shared vertex with its
+      // other two corners at most one width-length away -- always a
+      // simple triangle, never self-intersecting, whatever the angle.
+      pieces.push([vertex, prev.bLeft, cur.aLeft]);
+      pieces.push([vertex, prev.bRight, cur.aRight]);
+    }
+    return pieces;
+  }
+  // Same wedge-filling idea as buildRibbonPieces' interior joints, but
+  // for stitching two SEPARATE roads' ribbons together at a shared end
+  // vertex (In Road's far end / Out Road's near end) -- each road can
+  // have its own width, and "left"/"right" don't necessarily correspond
+  // between two independently-oriented roads, so this pairs whichever
+  // combination of corners is closer together (same trick used elsewhere
+  // in this file, e.g. combinePointSequences) before filling the two
+  // resulting wedge triangles.
+  function fillRibbonJunction(vertex, edgeA, edgeB, fillLayer) {
+    const straight = metersBetween(edgeA.left, edgeB.left) + metersBetween(edgeA.right, edgeB.right);
+    const crossed = metersBetween(edgeA.left, edgeB.right) + metersBetween(edgeA.right, edgeB.left);
+    const pairs =
+      straight <= crossed
+        ? [[edgeA.left, edgeB.left], [edgeA.right, edgeB.right]]
+        : [[edgeA.left, edgeB.right], [edgeA.right, edgeB.left]];
+    pairs.forEach(([p1, p2]) => {
+      fillLayer.addLayer(
+        L.polygon(
+          [vertex, p1, p2].map((p) => [p.lat, p.lng]),
+          { stroke: false, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 1, interactive: false }
+        )
+      );
+    });
+  }
+  // The real left/right ribbon-edge points AT one END of a route (index 0
+  // if `atStart`, otherwise the last index) -- literally the aLeft/aRight
+  // (or bLeft/bRight) corners of that route's own outermost segmentQuad,
+  // so this lines up exactly with what buildRibbonPieces actually drew
+  // there. For handing to fillRibbonJunction above.
+  function ribbonEdgeAtEnd(points, atStart, leftWidthMeters, rightWidthMeters) {
+    const quad = atStart
+      ? segmentQuad(points[0], points[Math.min(1, points.length - 1)], leftWidthMeters, rightWidthMeters)
+      : segmentQuad(points[points.length - 2] ?? points[points.length - 1], points[points.length - 1], leftWidthMeters, rightWidthMeters);
+    return atStart ? { left: quad.aLeft, right: quad.aRight } : { left: quad.bLeft, right: quad.bRight };
   }
   // Joins two point sequences end-to-end, auto-detecting which pair of
   // endpoints is actually adjacent (and reversing either sequence as
@@ -1078,27 +1155,25 @@
     ensureDirtPatternDefs();
     const insideMeters = opts.insideMeters;
     const outsideMeters = opts.outsideMeters;
-    const ribbon = bufferLineToRibbon(points, insideMeters, outsideMeters);
-    if (ribbon.length) {
-      // No stroke (weight: 0) -- every road segment (In Road, Out Road,
-      // each alley) is its own separate polygon that only shares vertices
-      // with its neighbors at a junction, not merged into one shape. A
-      // stroked border around each one draws its own line right along
-      // that shared edge too, and wherever 2-3 of these polygons converge
-      // (every road junction) their borders overlap/cross into exactly
-      // the ring-like artifact Heath flagged as "weird circles" -- worse
-      // once the junction-patch circles (their own even more visible
-      // circular stroke) piled another ring on top of that. Dropping the
-      // stroke entirely removes the seam lines; the matching dirt-pattern
-      // fill on both sides of a shared edge already reads as one
-      // continuous road with no visible border to draw in the first
-      // place.
-      const ribbonPoly = L.polygon(
-        ribbon.map((p) => [p.lat, p.lng]),
-        { stroke: false, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 0.95, interactive: false }
+    // No stroke on any of these -- every road segment (In Road, Out Road,
+    // each alley) is built from several small polygons (see
+    // buildRibbonPieces) that only share vertices with their neighbors,
+    // not one merged shape. A stroked border around each one draws its
+    // own line right along that shared edge too, and wherever several of
+    // these polygons converge (every road junction) their borders
+    // overlap/cross into a visible ring -- that's what Heath flagged as
+    // "weird circles" once the junction-patch circles piled another ring
+    // on top of that. Dropping the stroke entirely removes the seam
+    // lines; the matching dirt-pattern fill on both sides of a shared
+    // edge already reads as one continuous road with no border to draw.
+    buildRibbonPieces(points, insideMeters, outsideMeters).forEach((piece) => {
+      opts.fillLayer.addLayer(
+        L.polygon(
+          piece.map((p) => [p.lat, p.lng]),
+          { stroke: false, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 1, interactive: false }
+        )
       );
-      opts.fillLayer.addLayer(ribbonPoly);
-    }
+    });
 
     // The ribbon's real visual middle -- for a symmetric width (inside ==
     // outside, e.g. the out road) this offset is 0 and centerline is just
@@ -1422,6 +1497,17 @@
         labelsLayer: entranceRoadLabelsLayer,
       });
     });
+
+    // In Road's far end and Out Road's near end are the same shared
+    // vertex (the junction snap above), but each road's own ribbon still
+    // gives it a flat end cap using that road's own width/direction --
+    // same wedge-filling idea as buildRibbonPieces' interior joints, just
+    // applied across the two separate roads instead of within one.
+    if (combined && outRoadPoints) {
+      const entranceEdge = ribbonEdgeAtEnd(combined, false, ENTRANCE_ROAD_INSIDE_METERS, ENTRANCE_ROAD_OUTSIDE_METERS);
+      const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, OUT_ROAD_HALF_WIDTH_METERS, OUT_ROAD_HALF_WIDTH_METERS);
+      fillRibbonJunction(combined[combined.length - 1], entranceEdge, outRoadEdge, entranceRoadFillLayer);
+    }
   }
 
   function renderPermanentPaths() {
