@@ -427,6 +427,33 @@
   flex: 1;
   min-width: 100px;
 }
+/* Shown only when a pin sits close enough to two roads that the
+   automatic match (nearestRoadColor in js/maps.js) is a toss-up -- lets
+   Heath pick which road's color the pin should actually take. Buttons'
+   background/text color are set inline per road (js/maps.js), not here. */
+.dd-map-setup-road-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.35rem;
+}
+.dd-road-choice-btns {
+  display: flex;
+  gap: 0.5rem;
+}
+.dd-road-choice-btn {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  font-weight: 700;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.dd-road-choice-btn.is-selected {
+  border-color: #000;
+  box-shadow: 0 0 0 2px #fff inset;
+}
 .dd-map-setup-actions {
   display: flex;
   flex-wrap: wrap;
@@ -460,7 +487,8 @@
    "hide" class was correctly applied. Restate the override here, later
    in this same file, so hiding always wins regardless of load order. */
 .dd-map-setup-row.hide,
-.dd-map-setup-actions.hide {
+.dd-map-setup-actions.hide,
+.dd-map-setup-road-choice.hide {
   display: none;
 }
 :root[data-theme="dark"] .dd-map-setup-number {

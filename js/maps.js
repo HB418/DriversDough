@@ -64,7 +64,12 @@
   });
 
   function mapPinRow(row) {
-    return { id: row.id, number: row.number, lat: row.lat, lng: row.lng, rotation: row.rotation || 0 };
+    // road_key: the manually-chosen road (see PIN_ROAD_AMBIGUOUS_METERS/
+    // the road-choice buttons) for a pin that sat ambiguously close to two
+    // roads -- optional column, `undefined` on a server that hasn't run
+    // the migration yet, which renderPermanentPins treats the same as "no
+    // override, use the automatic nearest match".
+    return { id: row.id, number: row.number, lat: row.lat, lng: row.lng, rotation: row.rotation || 0, roadKey: row.road_key || null };
   }
   async function refreshPinsForMap(mapId) {
     try {
@@ -109,27 +114,34 @@
     return { pins: pinsCache[id] || [], paths: pathsCache[id] || [] };
   }
 
-  async function createPin(mapId, number, lat, lng, rotation) {
-    const { data: result, error } = await sb.rpc("dd_create_pin", {
-      p_token: window.DD.auth.getToken(),
-      p_map_id: mapId,
-      p_number: number,
-      p_lat: lat,
-      p_lng: lng,
-      p_rotation: rotation,
-    });
+  // road_key (the manual road-choice override, only set for a pin the
+  // ambiguous-pick UI applied to) is a NEW, optional RPC parameter --
+  // see the migration note near ROAD_LABEL_COLORS/updateRoadChoiceUI. If
+  // Heath's Supabase project hasn't had that migration run yet, the RPC
+  // functions won't have this parameter at all and calling with it fails
+  // outright (not a validation error, a "no matching function signature"
+  // error) -- so this tries WITH it first and, only on failure, retries
+  // WITHOUT it, rather than assuming the migration is already live. That
+  // keeps pin creation/editing working either way: with the migration
+  // applied, the choice persists; without it, the pin still saves fine,
+  // just without the persisted color override until the migration runs.
+  async function createPin(mapId, number, lat, lng, rotation, roadKey) {
+    const base = { p_token: window.DD.auth.getToken(), p_map_id: mapId, p_number: number, p_lat: lat, p_lng: lng, p_rotation: rotation };
+    if (roadKey) {
+      const { data: result, error } = await sb.rpc("dd_create_pin", { ...base, p_road_key: roadKey });
+      if (!error) return result;
+    }
+    const { data: result, error } = await sb.rpc("dd_create_pin", base);
     if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
     return result;
   }
-  async function updatePin(pinId, number, lat, lng, rotation) {
-    const { data: result, error } = await sb.rpc("dd_update_pin", {
-      p_token: window.DD.auth.getToken(),
-      p_pin_id: pinId,
-      p_number: number,
-      p_lat: lat,
-      p_lng: lng,
-      p_rotation: rotation,
-    });
+  async function updatePin(pinId, number, lat, lng, rotation, roadKey) {
+    const base = { p_token: window.DD.auth.getToken(), p_pin_id: pinId, p_number: number, p_lat: lat, p_lng: lng, p_rotation: rotation };
+    if (roadKey) {
+      const { data: result, error } = await sb.rpc("dd_update_pin", { ...base, p_road_key: roadKey });
+      if (!error) return result;
+    }
+    const { data: result, error } = await sb.rpc("dd_update_pin", base);
     if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
     return result;
   }
@@ -216,7 +228,13 @@
   // -- both are centered on the exact same ground point via
   // translate(-50%,-50%), the line additionally rotated around that
   // same center.
-  function makePinDivIcon(number, rotationDeg, scale, isPending) {
+  // `color` (optional, a road's ROAD_LABEL_COLORS hex -- see
+  // nearestRoadColor): overrides the CSS default orange/red badge+line so
+  // a confirmed pin matches the color of whichever road it's actually on.
+  // Skipped while `isPending` so the sky-blue "actively being placed"
+  // pulse (see .is-pending in maps.css) stays the obvious cue during
+  // drag/edit -- the road color takes over once it's confirmed/permanent.
+  function makePinDivIcon(number, rotationDeg, scale, isPending, color) {
     scale = scale || 1;
     const lineLen = Math.round(PIN_LINE_BASE_LEN * scale);
     const lineThick = Math.max(2, Math.round(PIN_LINE_BASE_THICK * scale));
@@ -224,11 +242,13 @@
     const box = Math.max(lineLen, badgeD) + 4;
     const fontPx = Math.max(9, Math.round(11 * scale));
     const pendingClass = isPending ? " is-pending" : "";
+    const lineColorStyle = !isPending && color ? "background:" + color + ";" : "";
+    const badgeColorStyle = !isPending && color ? "background:" + color + ";color:" + contrastTextColor(color) + ";" : "";
     const html =
       '<div class="dd-pin-icon' + pendingClass + '" style="width:' + box + "px;height:" + box + 'px;">' +
-      '<div class="dd-pin-line" style="width:' + lineLen + "px;height:" + lineThick +
-      "px;transform:translate(-50%,-50%) rotate(" + rotationDeg + 'deg);"></div>' +
-      '<div class="dd-pin-badge" style="font-size:' + fontPx + "px;min-width:" + badgeD + "px;height:" + badgeD + 'px;">' +
+      '<div class="dd-pin-line" style="width:' + lineLen + "px;height:" + lineThick + "px;" + lineColorStyle +
+      "transform:translate(-50%,-50%) rotate(" + rotationDeg + 'deg);"></div>' +
+      '<div class="dd-pin-badge" style="font-size:' + fontPx + "px;min-width:" + badgeD + "px;height:" + badgeD + "px;" + badgeColorStyle + '">' +
       escapeHtml(number) +
       "</div></div>";
     return L.divIcon({
@@ -354,6 +374,16 @@
   let pendingRotation = 0;
   let pendingDefaultNumber = null;
   let editingPinId = null; // set while pendingMarker represents an EXISTING pin being edited, not a new drop
+  // The last successfully-drawn road geometry (see renderEntranceRoad's own
+  // comment where this gets set) -- [{key, color, points}], read by
+  // nearestRoadColor below to match a pin to the road it's actually on.
+  // Amazon-only today (the only map with the road overlay at all); stays
+  // [] on any other map, which nearestRoadColor treats as "no match".
+  let lastRoadGeometryForColor = [];
+  // Which pin (by number, lowercased) is currently being placed/edited
+  // with an unresolved "could be either of two roads" choice pending --
+  // see updatePendingRoadChoice/the setup-fields road-choice buttons.
+  let pendingRoadKey = null;
   let locationTracker = null; // {watchId, marker} once geolocation is granted
   let followMode = true; // map re-centers on the live-location dot until the user drags away
 
@@ -385,6 +415,8 @@
   const setupFieldsRow = document.getElementById("dd-map-setup-fields");
   const setupNumberInput = document.getElementById("dd-map-setup-number");
   const setupRotationInput = document.getElementById("dd-map-setup-rotation");
+  const setupRoadChoiceRow = document.getElementById("dd-map-setup-road-choice");
+  const setupRoadChoiceBtns = document.getElementById("dd-map-setup-road-choice-btns");
   const setupActionsRow = document.getElementById("dd-map-setup-actions");
   const setupCancelBtn = document.getElementById("dd-map-setup-cancel");
   const setupConfirmBtn = document.getElementById("dd-map-setup-confirm");
@@ -695,8 +727,14 @@
         mapLeaflet.setView([entrancePoint.lat, entrancePoint.lng], 19, { animate: false });
       }
     }
-    renderPermanentPins();
+    // Paths first -- renderPermanentPaths draws the road overlay and
+    // records its final geometry (lastRoadGeometryForColor) as a side
+    // effect, which pin rendering below needs already up to date to color
+    // each pin to the road it's actually on (see nearestRoadColor). Pins
+    // rendered before that would fall back to the default color, or a
+    // stale map's leftover geometry, on every fresh map open.
     renderPermanentPaths();
+    renderPermanentPins();
   }
   function closeMapView() {
     setSetupMode(false);
@@ -723,7 +761,7 @@
     const pinsInteractive = setupModeOn;
     rec.pins.forEach((pin) => {
       const marker = L.marker([pin.lat, pin.lng], {
-        icon: makePinDivIcon(pin.number, pin.rotation || 0, scale, false),
+        icon: makePinDivIcon(pin.number, pin.rotation || 0, scale, false, pinColorFor(pin)),
         interactive: pinsInteractive,
         keyboard: false,
       });
@@ -892,6 +930,32 @@
       pieces.push([vertex, prev.bRight, cur.aRight]);
     }
     return pieces.map(inflatePiece);
+  }
+  // A single closed outline ring (left edge out, right edge back) tracing
+  // a road's OVERALL outer boundary -- separate from buildRibbonPieces on
+  // purpose. That function's many small quads/triangles are what actually
+  // get filled; stroking each of THOSE individually was tried before and
+  // rejected (see drawTexturedRoad's own comment: it drew a border along
+  // every internal seam too, and every junction where several pieces
+  // converge piled multiple rings on top of each other into a visible
+  // blob -- "weird circles"). This instead builds ONE simple ring for the
+  // whole road and strokes only that, as its own separate polygon added
+  // on top of (not replacing) the existing fill -- so it can't touch or
+  // regress the fill geometry at all. At a sharp bend this corner-cuts
+  // slightly relative to buildRibbonPieces' small wedge bulge there (a
+  // fraction of one width-length) rather than exactly tracing it -- an
+  // acceptable trade for a purely cosmetic border that carries zero risk
+  // to the actual road shape.
+  function buildRibbonOutline(points, widths) {
+    if (points.length < 2) return null;
+    const w = widthsForPoints(points, widths);
+    const quads = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      quads.push(segmentQuad(points[i], w[i], points[i + 1], w[i + 1]));
+    }
+    const left = [quads[0].aLeft].concat(quads.map((q) => q.bLeft));
+    const right = [quads[0].aRight].concat(quads.map((q) => q.bRight));
+    return left.concat(right.slice().reverse());
   }
   // The road's own true left/right edge AT a closestPointOnPolyline() hit
   // -- i.e. exactly the corners buildRibbonPieces would draw there, using
@@ -1112,12 +1176,18 @@
   // functions compose right-to-left against the element's own box), so it
   // spins in place around where it's actually sitting rather than around
   // its top-left corner.
-  function makeFlowLetterIcon(char, angleDeg, fontPx) {
+  function makeFlowLetterIcon(char, angleDeg, fontPx, color) {
+    // `color` overrides the CSS default white (see .dd-road-flow-letter) --
+    // its black text-shadow outline stays either way, so a colored letter
+    // still reads clearly against the dirt-pattern fill.
+    const colorStyle = color ? "color:" + color + "; " : "";
     return L.divIcon({
       html:
         '<span class="dd-road-flow-letter" style="font-size:' +
         fontPx +
-        'px; transform: translate(-50%, -50%) rotate(' +
+        "px; " +
+        colorStyle +
+        'transform: translate(-50%, -50%) rotate(' +
         angleDeg +
         'deg)">' +
         char +
@@ -1164,7 +1234,7 @@
   // is shared across every repetition on the same road so they all read
   // the same direction; each letter's own angle still follows the local
   // curve, only the flip/order decision is fixed road-wide.
-  function renderFlowingRoadText(text, points, segLens, total, centerFraction, layer, scale, flip) {
+  function renderFlowingRoadText(text, points, segLens, total, centerFraction, layer, scale, flip, color) {
     // Ground-meter spacing grows as the view zooms out (scale shrinks) so
     // the on-screen gap between letters stays roughly constant instead of
     // collapsing -- the opposite direction from font size below, which
@@ -1182,7 +1252,7 @@
       const finalAngle = flip ? angle + 180 : angle;
       layer.addLayer(
         L.marker([lat, lng], {
-          icon: makeFlowLetterIcon(ch, finalAngle, fontPx),
+          icon: makeFlowLetterIcon(ch, finalAngle, fontPx, color),
           interactive: false,
           keyboard: false,
         })
@@ -1318,6 +1388,21 @@
         )
       );
     });
+    // Thin black border -- see buildRibbonOutline's own comment for why
+    // this is a completely separate, unfilled polygon added ON TOP of the
+    // fill above rather than a stroke on the fill pieces themselves.
+    const outline = buildRibbonOutline(points, widthAt);
+    if (outline) {
+      opts.fillLayer.addLayer(
+        L.polygon(outline.map((p) => [p.lat, p.lng]), {
+          stroke: true,
+          color: "#000",
+          weight: 1.5,
+          fill: false,
+          interactive: false,
+        })
+      );
+    }
 
     // The ribbon's real visual middle -- for a symmetric width (inside ==
     // outside, e.g. the out road) this offset is 0 and centerline is just
@@ -1344,7 +1429,7 @@
     const flip = overallRouteFlip(centerline);
     const labelFractions = opts.labelFractions || [0.25, 0.5, 0.75];
     labelFractions.forEach((frac) => {
-      renderFlowingRoadText(opts.labelText, centerline, segLens, total, frac, opts.labelsLayer, scale, flip);
+      renderFlowingRoadText(opts.labelText, centerline, segLens, total, frac, opts.labelsLayer, scale, flip, opts.labelColor);
     });
   }
   // Merges/drops points that sit closer together than `minMeters`, always
@@ -1452,6 +1537,84 @@
       }
     }
     return best;
+  }
+  // Which road (from lastRoadGeometryForColor, the last successfully-drawn
+  // overlay) a given point is closest to -- how a pin's color is decided
+  // (Heath: "when pinpoints are added... it should match the color of the
+  // label for the road that it is on"). Returns null when there's no road
+  // geometry to match against yet (e.g. a map with no road overlay, or
+  // nothing has rendered successfully). Otherwise {key, color, distance,
+  // second}: `second` carries the SAME shape for the next-closest road
+  // when the top two are close enough together that a human would
+  // reasonably read the pin as being on either one (Heath: "if it could
+  // be two different colors, give the user an option to choose between
+  // the two") -- null when the nearest road is a clear, unambiguous pick.
+  const PIN_ROAD_AMBIGUOUS_METERS = 5;
+  function nearestRoadColor(lat, lng) {
+    const target = { lat, lng };
+    const distances = lastRoadGeometryForColor
+      .map((road) => {
+        const hit = closestPointOnPolyline(road.points, target);
+        return hit ? { key: road.key, color: road.color, distance: hit.distM } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.distance - b.distance);
+    if (!distances.length) return null;
+    const [first, second] = distances;
+    const ambiguous = !!second && second.distance - first.distance <= PIN_ROAD_AMBIGUOUS_METERS;
+    return { key: first.key, color: first.color, distance: first.distance, second: ambiguous ? second : null };
+  }
+  // A saved pin's own manual road choice (see mapPinRow's roadKey) wins
+  // when present -- that's Heath picking the answer himself for a pin
+  // nearestRoadColor found ambiguous. Otherwise fall back to whichever
+  // road is actually closest. Returns undefined (not a color) when
+  // neither is available, which makePinDivIcon treats as "use the default
+  // CSS color" rather than drawing an invalid background.
+  function pinColorFor(pin) {
+    if (pin.roadKey && ROAD_LABEL_COLORS[pin.roadKey]) return ROAD_LABEL_COLORS[pin.roadKey];
+    return nearestRoadColor(pin.lat, pin.lng)?.color;
+  }
+  // Re-checks whether the pin currently being placed/edited (pendingMarker)
+  // sits ambiguously between two roads, and shows/hides the road-choice
+  // buttons accordingly -- called whenever its position changes (initial
+  // drop, drag, or opening an existing pin to edit). `presetKey` (optional,
+  // used when editing an existing pin) pre-selects that pin's own stored
+  // choice if it's still one of the two candidates at the pin's current
+  // spot; otherwise defaults to whichever road is actually nearest.
+  function updateRoadChoiceUI(lat, lng, presetKey) {
+    const match = nearestRoadColor(lat, lng);
+    if (!match || !match.second) {
+      pendingRoadKey = null;
+      setupRoadChoiceRow?.classList.add("hide");
+      if (setupRoadChoiceBtns) setupRoadChoiceBtns.innerHTML = "";
+      return;
+    }
+    const candidates = [match, match.second];
+    pendingRoadKey = candidates.some((c) => c.key === presetKey) ? presetKey : match.key;
+    if (setupRoadChoiceBtns) {
+      setupRoadChoiceBtns.innerHTML = "";
+      candidates.forEach((c) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "dd-road-choice-btn" + (c.key === pendingRoadKey ? " is-selected" : "");
+        btn.style.background = c.color;
+        btn.style.color = contrastTextColor(c.color);
+        btn.textContent = ROAD_NAME_BY_KEY[c.key] || "Road";
+        // The pending marker itself stays sky-blue/pulsing the whole time
+        // it's being placed (see makePinDivIcon's isPending skip) -- that's
+        // the "still editable" cue and shouldn't be replaced by the road
+        // color mid-edit. The button's own highlighted border is the only
+        // feedback for which choice is selected; the actual color shows up
+        // once Confirm/Save re-renders the pin as permanent.
+        btn.addEventListener("click", () => {
+          pendingRoadKey = c.key;
+          setupRoadChoiceBtns.querySelectorAll(".dd-road-choice-btn").forEach((b) => b.classList.remove("is-selected"));
+          btn.classList.add("is-selected");
+        });
+        setupRoadChoiceBtns.appendChild(btn);
+      });
+    }
+    setupRoadChoiceRow?.classList.remove("hide");
   }
   // Inserts a closestPointOnPolyline() hit as a real vertex in `points` --
   // skipped when the hit landed effectively AT an existing vertex (start
@@ -1588,6 +1751,40 @@
       outRoadPolyline: workingOutRoad,
     };
   }
+  // One rainbow color per named road (Heath: "make the label a different
+  // color of the rainbow... I think we are 1 color short using the
+  // rainbow, so use Magenta as the last color") -- ROYGBIV is 7 colors,
+  // there are 8 named roads today (In Road, Out Road, 4 alleys, Offshoot
+  // Alley, Rec Road), so Magenta fills the 8th slot. Keyed by 'in'/'out'
+  // for the two main roads and by pathIndex for each alley, fixed and
+  // stable so a road's color never shifts just because another alley was
+  // added or removed. Waypoint 10's connector has no label of its own (see
+  // ALLEY_CONNECTOR_DEFS) so it isn't in here -- a pin near it matches
+  // whichever of its two connected alleys is actually closer instead (see
+  // nearestRoadColor below).
+  const ROAD_LABEL_COLORS = {
+    in: "#e6194b", // red -- IN ROAD
+    out: "#f97316", // orange -- OUT ROAD
+    3: "#eab308", // yellow -- ALLEY ONE
+    4: "#22c55e", // green -- ALLEY TWO
+    5: "#3b82f6", // blue -- ALLEY THREE
+    6: "#4b0082", // indigo -- ALLEY FOUR
+    7: "#8b00ff", // violet -- OFFSHOOT ALLEY
+    8: "#ff00ff", // magenta -- REC ROAD
+  };
+  // Same keys as ROAD_LABEL_COLORS, for the road-choice buttons' own text
+  // (updateRoadChoiceUI) -- kept as a separate lookup rather than reusing
+  // ALLEY_DEFS' labels since 'in'/'out' aren't in that list at all.
+  const ROAD_NAME_BY_KEY = {
+    in: "IN ROAD",
+    out: "OUT ROAD",
+    3: "ALLEY ONE",
+    4: "ALLEY TWO",
+    5: "ALLEY THREE",
+    6: "ALLEY FOUR",
+    7: "OFFSHOOT ALLEY",
+    8: "REC ROAD",
+  };
   // Waypoints 4-8 ("Alley One" through "Alley Four", plus "Offshoot
   // Alley") -- each one a short connector between In Road and Out Road,
   // same width as Out Road (no building crowds these either, per Heath).
@@ -1805,6 +2002,7 @@
       drawTexturedRoad(combined, {
         widths: combinedWidths,
         labelText: "IN ROAD",
+        labelColor: ROAD_LABEL_COLORS.in,
         startLabelText: "ENTRANCE",
         startLabelOffset: [-4, 14],
         fillLayer: entranceRoadFillLayer,
@@ -1817,6 +2015,7 @@
         insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
         outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
         labelText: "OUT ROAD",
+        labelColor: ROAD_LABEL_COLORS.out,
         startLabelText: null,
         fillLayer: entranceRoadFillLayer,
         labelsLayer: entranceRoadLabelsLayer,
@@ -1828,6 +2027,7 @@
         insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
         outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
         labelText: alley.label,
+        labelColor: ROAD_LABEL_COLORS[alley.pathIndex],
         labelFractions: [0.5],
         startLabelText: null,
         fillLayer: entranceRoadFillLayer,
@@ -1870,6 +2070,24 @@
       const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS });
       fillRibbonJunction(entranceEdge, outRoadEdge, entranceRoadFillLayer);
     }
+    // Snapshot of exactly what got drawn (the FINAL, snapped/deduped
+    // points each road ended up with, not the raw waypoint data) -- this
+    // is what nearestRoadColor below matches a pin against, so "which
+    // road is this pin on" agrees with what's actually visible on the
+    // map. Only entries with a real rainbow color (ROAD_LABEL_COLORS) are
+    // kept, which naturally excludes waypoint 10's unlabeled connector --
+    // see ROAD_LABEL_COLORS' own comment. Left as the last successful
+    // render on failure (see the catch below) rather than cleared, so a
+    // future rendering bug degrades to "pin colors go slightly stale"
+    // instead of "pin colors disappear".
+    const roadGeometry = [];
+    if (combined) roadGeometry.push({ key: "in", color: ROAD_LABEL_COLORS.in, points: combined });
+    if (outRoadPoints) roadGeometry.push({ key: "out", color: ROAD_LABEL_COLORS.out, points: outRoadPoints });
+    alleysToDraw.forEach((alley) => {
+      const color = ROAD_LABEL_COLORS[alley.pathIndex];
+      if (color) roadGeometry.push({ key: String(alley.pathIndex), color, points: alley.points });
+    });
+    lastRoadGeometryForColor = roadGeometry;
     return true;
     } catch (err) {
       console.error(
@@ -1954,18 +2172,21 @@
     if (!mapLeaflet) return;
     const scale = scaleForZoom(mapLeaflet);
     const rec = getMapRecord(currentMapId);
+    // Paths first (see openMapView's own comment) so lastRoadGeometryForColor
+    // is current before pin colors below read it -- in practice this
+    // rarely changes what's drawn (a zoom doesn't move any road), but
+    // keeps the two in the same reliable order everywhere rather than
+    // depending on geometry happening to already be fresh.
+    renderPermanentPaths();
     Object.keys(pinMarkersByNumber).forEach((key) => {
       const marker = pinMarkersByNumber[key];
       const pin = rec.pins.find((p) => String(p.number).toLowerCase() === key);
-      if (marker && pin) marker.setIcon(makePinDivIcon(pin.number, pin.rotation || 0, scale, false));
+      if (marker && pin) marker.setIcon(makePinDivIcon(pin.number, pin.rotation || 0, scale, false, pinColorFor(pin)));
     });
     if (pendingMarker) {
       pendingMarker.setIcon(makePinDivIcon(setupNumberInput?.value || pendingDefaultNumber, pendingRotation, scale, true));
       forceReenableDragging(pendingMarker);
     }
-    // Paths: a handful of permanent paths at most, so a full re-render on
-    // zoom is simpler than patching each marker in place like pins do.
-    renderPermanentPaths();
     if (pendingPathMarkers.length) {
       pendingPathPoints.forEach((p, i) => {
         const kind = i === 0 ? "start" : i === pendingPathPoints.length - 1 ? "end" : "mid";
@@ -1998,6 +2219,8 @@
     pendingDefaultNumber = null;
     editingPinId = null;
     setupFieldsRow?.classList.add("hide");
+    setupRoadChoiceRow?.classList.add("hide");
+    pendingRoadKey = null;
     setupActionsRow?.classList.add("hide");
     setupDeleteBtn?.classList.add("hide");
     if (setupConfirmBtn) {
@@ -2061,6 +2284,15 @@
       draggable: true,
       keyboard: false,
     }).addTo(mapLeaflet);
+    // Re-check road-choice ambiguity as the pin gets dragged, same as a
+    // fresh drop below -- its road (and so its color) can change as it
+    // moves. Pre-selects this pin's own stored choice (pin.roadKey) if
+    // still one of the two candidates at its current spot.
+    pendingMarker.on("dragend", () => {
+      const ll = pendingMarker.getLatLng();
+      updateRoadChoiceUI(ll.lat, ll.lng, pin.roadKey);
+    });
+    updateRoadChoiceUI(pin.lat, pin.lng, pin.roadKey);
 
     if (setupNumberInput) setupNumberInput.value = String(pin.number);
     if (setupRotationInput) setupRotationInput.value = pendingRotation;
@@ -2083,6 +2315,7 @@
     const scale = scaleForZoom(mapLeaflet);
     if (pendingMarker) {
       pendingMarker.setLatLng(e.latlng);
+      updateRoadChoiceUI(e.latlng.lat, e.latlng.lng);
     } else {
       pendingDefaultNumber = lowestAvailableNumber(rec);
       pendingRotation = 0;
@@ -2091,6 +2324,13 @@
         draggable: true,
         keyboard: false,
       }).addTo(mapLeaflet);
+      // Re-check as the pin gets dragged into its actual final spot, same
+      // as the re-tap-to-move branch above.
+      pendingMarker.on("dragend", () => {
+        const ll = pendingMarker.getLatLng();
+        updateRoadChoiceUI(ll.lat, ll.lng);
+      });
+      updateRoadChoiceUI(e.latlng.lat, e.latlng.lng);
       if (setupNumberInput) setupNumberInput.value = String(pendingDefaultNumber);
       if (setupRotationInput) setupRotationInput.value = 0;
     }
@@ -2136,8 +2376,8 @@
 
     if (setupConfirmBtn) setupConfirmBtn.disabled = true;
     const result = editingPinId
-      ? await updatePin(editingPinId, numberInt, ll.lat, ll.lng, pendingRotation)
-      : await createPin(mapId, numberInt, ll.lat, ll.lng, pendingRotation);
+      ? await updatePin(editingPinId, numberInt, ll.lat, ll.lng, pendingRotation, pendingRoadKey)
+      : await createPin(mapId, numberInt, ll.lat, ll.lng, pendingRotation, pendingRoadKey);
     if (setupConfirmBtn) setupConfirmBtn.disabled = false;
 
     if (!result || !result.ok) {

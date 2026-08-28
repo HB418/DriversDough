@@ -95,6 +95,12 @@ create table if not exists public.map_pins (
   lat double precision not null,
   lng double precision not null,
   rotation double precision not null default 0,
+  -- Which road this pin's color is locked to, when Setup Mode's
+  -- road-choice buttons were used to settle an ambiguous spot (a pin
+  -- sitting close to two roads at once). Null for every pin that was
+  -- never ambiguous -- those just auto-color to whichever road they're
+  -- nearest, computed fresh each time the map renders.
+  road_key text,
   created_by uuid references public.accounts (id) on delete set null,
   created_at timestamptz not null default now()
 );
@@ -552,7 +558,8 @@ create or replace function public.dd_create_pin(
   p_number int,
   p_lat double precision,
   p_lng double precision,
-  p_rotation double precision
+  p_rotation double precision,
+  p_road_key text default null
 ) returns jsonb
 language plpgsql
 security definer
@@ -567,8 +574,8 @@ begin
     return jsonb_build_object('ok', false, 'error', 'Admin only.');
   end if;
 
-  insert into public.map_pins (map_id, number, lat, lng, rotation, created_by)
-  values (p_map_id, p_number, p_lat, p_lng, p_rotation, v_account.id)
+  insert into public.map_pins (map_id, number, lat, lng, rotation, road_key, created_by)
+  values (p_map_id, p_number, p_lat, p_lng, p_rotation, p_road_key, v_account.id)
   returning id into v_id;
 
   return jsonb_build_object('ok', true, 'id', v_id);
@@ -581,7 +588,8 @@ create or replace function public.dd_update_pin(
   p_number int,
   p_lat double precision,
   p_lng double precision,
-  p_rotation double precision
+  p_rotation double precision,
+  p_road_key text default null
 ) returns jsonb
 language plpgsql
 security definer
@@ -596,7 +604,7 @@ begin
   end if;
 
   update public.map_pins
-    set number = p_number, lat = p_lat, lng = p_lng, rotation = p_rotation
+    set number = p_number, lat = p_lat, lng = p_lng, rotation = p_rotation, road_key = p_road_key
     where id = p_pin_id;
 
   return jsonb_build_object('ok', true);
@@ -1073,8 +1081,8 @@ grant execute on function public.dd_add_reply(text, uuid, text) to anon, authent
 grant execute on function public.dd_toggle_swap_status(text, uuid) to anon, authenticated;
 grant execute on function public.dd_delete_thread(text, uuid) to anon, authenticated;
 grant execute on function public.dd_delete_reply(text, uuid) to anon, authenticated;
-grant execute on function public.dd_create_pin(text, text, int, double precision, double precision, double precision) to anon, authenticated;
-grant execute on function public.dd_update_pin(text, uuid, int, double precision, double precision, double precision) to anon, authenticated;
+grant execute on function public.dd_create_pin(text, text, int, double precision, double precision, double precision, text) to anon, authenticated;
+grant execute on function public.dd_update_pin(text, uuid, int, double precision, double precision, double precision, text) to anon, authenticated;
 grant execute on function public.dd_delete_pin(text, uuid) to anon, authenticated;
 grant execute on function public.dd_create_path(text, text, jsonb) to anon, authenticated;
 grant execute on function public.dd_update_path(text, uuid, jsonb) to anon, authenticated;
