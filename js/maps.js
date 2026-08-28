@@ -931,31 +931,84 @@
     }
     return pieces.map(inflatePiece);
   }
-  // A single closed outline ring (left edge out, right edge back) tracing
+  // The left edge, right edge, and (where real) the two end caps tracing
   // a road's OVERALL outer boundary -- separate from buildRibbonPieces on
   // purpose. That function's many small quads/triangles are what actually
   // get filled; stroking each of THOSE individually was tried before and
   // rejected (see drawTexturedRoad's own comment: it drew a border along
   // every internal seam too, and every junction where several pieces
   // converge piled multiple rings on top of each other into a visible
-  // blob -- "weird circles"). This instead builds ONE simple ring for the
-  // whole road and strokes only that, as its own separate polygon added
-  // on top of (not replacing) the existing fill -- so it can't touch or
-  // regress the fill geometry at all. At a sharp bend this corner-cuts
+  // blob -- "weird circles"). This instead builds simple edge lines for
+  // the whole road and strokes only those, as their own separate polylines
+  // added on top of (not replacing) the existing fill -- so it can't touch
+  // or regress the fill geometry at all. At a sharp bend this corner-cuts
   // slightly relative to buildRibbonPieces' small wedge bulge there (a
   // fraction of one width-length) rather than exactly tracing it -- an
   // acceptable trade for a purely cosmetic border that carries zero risk
   // to the actual road shape.
-  function buildRibbonOutline(points, widths) {
+  //
+  // Two fixes folded in after Heath flagged real problems with the first
+  // version (screenshot: a stray line cutting across mid-ribbon past an
+  // alley junction, a border sitting where In Road flows into Out Road,
+  // and the border sitting visibly inside the actual dirt edge elsewhere):
+  //
+  // 1. Widened by RIBBON_PIECE_OVERLAP_METERS on top of the road's own
+  //    width, matching how far inflatePiece already grows the FILL pieces
+  //    outward -- without this the border traced the pre-inflation edge
+  //    and sat slightly inside the visible dirt (issue 3: "the border is
+  //    not on edge, but slightly inset").
+  // 2. `opts.capStart`/`opts.capEnd` (default true = draw that end's cap)
+  //    let a caller suppress the perpendicular cap at whichever end(s)
+  //    are actually snapped/bridged onto another road rather than a real
+  //    dead end. Every alley connects at both ends (no free end at all),
+  //    and In Road's far end bridges straight into Out Road's near end --
+  //    a naive full ring at each of those independently drew a cap-line
+  //    cutting across the middle of what's supposed to read as one
+  //    continuous, seamless road (issue 1: "border runs far past where
+  //    the alleys meet the road" -- the alley's own cap sat inside the
+  //    wider merged junction blob rather than at any real pavement edge;
+  //    issue 2: "In road runs under out road, there should not be a
+  //    border there on out" -- Out Road's own start-cap was drawn right
+  //    where In Road flows into it). Left/right edges are still drawn in
+  //    full either way -- only the perpendicular closing line at a
+  //    bridged end is ever left out.
+  function buildRibbonOutline(points, widths, opts) {
+    opts = opts || {};
     if (points.length < 2) return null;
     const w = widthsForPoints(points, widths);
+    const grown = w.map((o) => ({ left: o.left + RIBBON_PIECE_OVERLAP_METERS, right: o.right + RIBBON_PIECE_OVERLAP_METERS }));
     const quads = [];
     for (let i = 0; i < points.length - 1; i++) {
-      quads.push(segmentQuad(points[i], w[i], points[i + 1], w[i + 1]));
+      quads.push(segmentQuad(points[i], grown[i], points[i + 1], grown[i + 1]));
     }
     const left = [quads[0].aLeft].concat(quads.map((q) => q.bLeft));
     const right = [quads[0].aRight].concat(quads.map((q) => q.bRight));
-    return left.concat(right.slice().reverse());
+    // `opts.startBridge`/`opts.endBridge` ({left,right}, already paired via
+    // pairEdgeCorners against this road's own edge at that end) extend the
+    // left/right lines out to the TRUE corner where a snapped/bridged
+    // junction's fill wedge actually lands, instead of stopping at this
+    // road's own raw un-widened edge. Without this, simply omitting the
+    // cap (capStart/capEnd above) still left a dangling loose end sitting
+    // inside the wider merged junction fill -- itself a visible stray line
+    // (Heath's screenshot: "border runs far past where the alleys meet the
+    // road"). Passed by renderEntranceRoad wherever it already has the
+    // matching crossSectionAtHit/ribbonEdgeAtEnd data (the exact same
+    // points fillRibbonJunction fills a wedge to), so the border and the
+    // fill agree on the junction's true shape.
+    if (opts.startBridge) {
+      left.unshift(opts.startBridge.left);
+      right.unshift(opts.startBridge.right);
+    }
+    if (opts.endBridge) {
+      left.push(opts.endBridge.left);
+      right.push(opts.endBridge.right);
+    }
+    return {
+      left,
+      right,
+      startCap: opts.capStart === false ? null : [left[0], right[0]],
+      endCap: opts.capEnd === false ? null : [left[left.length - 1], right[right.length - 1]],
+    };
   }
   // The road's own true left/right edge AT a closestPointOnPolyline() hit
   // -- i.e. exactly the corners buildRibbonPieces would draw there, using
@@ -979,25 +1032,36 @@
     const quad = segmentQuad(a, wA, hit.point, hitWidth);
     return { left: quad.bLeft, right: quad.bRight };
   }
+  // "left"/"right" don't necessarily correspond between two
+  // independently-oriented ribbons meeting at a junction (an alley can
+  // run in from either side of a road, two roads can meet at any angle)
+  // -- this picks whichever pairing of edgeB's two corners against
+  // edgeA's own actually has the smaller total span (same trick used
+  // elsewhere in this file, e.g. combinePointSequences), returning
+  // edgeB's corners reordered so `.left` is the one that actually belongs
+  // on edgeA's left. Shared by fillRibbonJunction (the fill wedge below)
+  // and buildRibbonOutline's startBridge/endBridge (the border tracing
+  // the SAME true junction corners, so the two always agree on which
+  // point is which).
+  function pairEdgeCorners(edgeA, edgeB) {
+    const straight = metersBetween(edgeA.left, edgeB.left) + metersBetween(edgeA.right, edgeB.right);
+    const crossed = metersBetween(edgeA.left, edgeB.right) + metersBetween(edgeA.right, edgeB.left);
+    return straight <= crossed ? { left: edgeB.left, right: edgeB.right } : { left: edgeB.right, right: edgeB.left };
+  }
   // Same wedge-filling idea as buildRibbonPieces' interior joints, but
   // for stitching two SEPARATE roads' ribbons together at a shared end
   // vertex (In Road's far end / Out Road's near end) -- each road can
   // have its own width, and "left"/"right" don't necessarily correspond
   // between two independently-oriented roads, so this pairs whichever
-  // combination of corners is closer together (same trick used elsewhere
-  // in this file, e.g. combinePointSequences) before filling the two
-  // resulting wedge triangles.
+  // combination of corners is closer together (see pairEdgeCorners above)
+  // before filling the two resulting wedge triangles.
   // Bridges two SEPARATE routes' real end caps with a plain quad (split
   // into 2 triangles along a diagonal so it can never self-intersect,
   // same reasoning as buildRibbonPieces' interior joints) -- no shared
   // vertex assumed, since the two real endpoints these edges sit at can
-  // be a genuine gap apart. "left"/"right" don't necessarily correspond
-  // between two independently-oriented roads, so pick whichever pairing
-  // has the smaller total span (same trick as combinePointSequences).
+  // be a genuine gap apart.
   function fillRibbonJunction(edgeA, edgeB, fillLayer) {
-    const straight = metersBetween(edgeA.left, edgeB.left) + metersBetween(edgeA.right, edgeB.right);
-    const crossed = metersBetween(edgeA.left, edgeB.right) + metersBetween(edgeA.right, edgeB.left);
-    const paired = straight <= crossed ? { left: edgeB.left, right: edgeB.right } : { left: edgeB.right, right: edgeB.left };
+    const paired = pairEdgeCorners(edgeA, edgeB);
     [
       [edgeA.left, paired.left, paired.right],
       [edgeA.left, paired.right, edgeA.right],
@@ -1389,19 +1453,26 @@
       );
     });
     // Thin black border -- see buildRibbonOutline's own comment for why
-    // this is a completely separate, unfilled polygon added ON TOP of the
-    // fill above rather than a stroke on the fill pieces themselves.
-    const outline = buildRibbonOutline(points, widthAt);
+    // this is a completely separate set of unfilled polylines added ON TOP
+    // of the fill above rather than a stroke on the fill pieces
+    // themselves. Left/right edges plus whichever end caps are real (not
+    // snapped onto another road -- opts.capStart/capEnd, passed by
+    // renderEntranceRoad's own call sites below) are each their own
+    // L.polyline rather than one closed L.polygon ring, specifically so a
+    // bridged end can just omit its cap instead of drawing one that has
+    // nowhere correct to go.
+    const outline = buildRibbonOutline(points, widthAt, {
+      capStart: opts.capStart,
+      capEnd: opts.capEnd,
+      startBridge: opts.startBridge,
+      endBridge: opts.endBridge,
+    });
     if (outline) {
-      opts.fillLayer.addLayer(
-        L.polygon(outline.map((p) => [p.lat, p.lng]), {
-          stroke: true,
-          color: "#000",
-          weight: 1.5,
-          fill: false,
-          interactive: false,
-        })
-      );
+      const borderStyle = { stroke: true, color: "#000", weight: 1.5, fill: false, interactive: false };
+      opts.fillLayer.addLayer(L.polyline(outline.left.map((p) => [p.lat, p.lng]), borderStyle));
+      opts.fillLayer.addLayer(L.polyline(outline.right.map((p) => [p.lat, p.lng]), borderStyle));
+      if (outline.startCap) opts.fillLayer.addLayer(L.polyline(outline.startCap.map((p) => [p.lat, p.lng]), borderStyle));
+      if (outline.endCap) opts.fillLayer.addLayer(L.polyline(outline.endCap.map((p) => [p.lat, p.lng]), borderStyle));
     }
 
     // The ribbon's real visual middle -- for a symmetric width (inside ==
@@ -1990,6 +2061,27 @@
       alley.points = dedupeAdjacentPoints(alley.points, DEDUPE_MIN_METERS);
     });
 
+    // In Road's far end and Out Road's near end always get bridged
+    // together below (the `fillRibbonJunction` call right after this
+    // block) whenever both roads exist -- their border shouldn't draw a
+    // cap right at that shared, seamless join (Heath: "In road runs under
+    // out road, there should not be a border there on out"), and each
+    // side's border should extend to meet the OTHER road's true edge
+    // there rather than just stop at its own (see buildRibbonOutline's
+    // startBridge/endBridge comment) -- both computed once up front,
+    // reusing the exact same edge points the actual fill wedge below
+    // bridges, so the border and the fill always agree on this junction's
+    // shape.
+    const inOutBridged = !!(combined && outRoadPoints);
+    let combinedEndBridge = null;
+    let outRoadStartBridge = null;
+    if (inOutBridged) {
+      const entranceEdge = ribbonEdgeAtEnd(combined, false, combinedWidths);
+      const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS });
+      combinedEndBridge = pairEdgeCorners(entranceEdge, outRoadEdge);
+      outRoadStartBridge = pairEdgeCorners(outRoadEdge, entranceEdge);
+    }
+
     if (combined) {
       // "ENTRANCE" belongs at route 1's free end -- whichever endpoint of
       // route 1 did NOT get used to join onto route 2. combinePointSequences
@@ -2007,6 +2099,8 @@
         startLabelOffset: [-4, 14],
         fillLayer: entranceRoadFillLayer,
         labelsLayer: entranceRoadLabelsLayer,
+        capEnd: !inOutBridged,
+        endBridge: combinedEndBridge,
       });
     }
 
@@ -2019,20 +2113,12 @@
         startLabelText: null,
         fillLayer: entranceRoadFillLayer,
         labelsLayer: entranceRoadLabelsLayer,
+        capStart: !inOutBridged,
+        startBridge: outRoadStartBridge,
       });
     }
 
     alleysToDraw.forEach((alley) => {
-      drawTexturedRoad(alley.points, {
-        insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
-        outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
-        labelText: alley.label,
-        labelColor: ROAD_LABEL_COLORS[alley.pathIndex],
-        labelFractions: [0.5],
-        startLabelText: null,
-        fillLayer: entranceRoadFillLayer,
-        labelsLayer: entranceRoadLabelsLayer,
-      });
       // Bridge the alley's own two end caps onto the road's real surface
       // at each connection point. Inserting a shared vertex into the
       // road's polyline (snapAlleyToRoads above) keeps the ROAD itself
@@ -2048,13 +2134,38 @@
       // null here. Nothing to bridge there: that end was never forced
       // onto a road, so it just keeps its own natural flat end cap,
       // exactly like any other dead end.
+      // Computed BEFORE drawTexturedRoad so the border (startBridge/
+      // endBridge below) can extend to the exact same corners the fill
+      // wedge below bridges to -- otherwise the border stops at the
+      // alley's own raw edge, which sits inside the wider merged junction
+      // fill and reads as a stray line running past the real junction
+      // (Heath's screenshot).
       const alleyWidths = { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS };
+      const alleyStartEdge = alley.startCrossSection ? ribbonEdgeAtEnd(alley.points, true, alleyWidths) : null;
+      const alleyEndEdge = alley.endCrossSection ? ribbonEdgeAtEnd(alley.points, false, alleyWidths) : null;
+      drawTexturedRoad(alley.points, {
+        insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+        outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+        labelText: alley.label,
+        labelColor: ROAD_LABEL_COLORS[alley.pathIndex],
+        labelFractions: [0.5],
+        startLabelText: null,
+        // Both ends bridge onto a road (or another alley, for the
+        // connector) whenever that end actually snapped -- see
+        // snapAlleyToRoads/its startCrossSection/endCrossSection -- a null
+        // cross-section means that end stayed a real dead end (e.g. a
+        // one-sided spur like Offshoot Alley), which keeps its cap.
+        capStart: !alley.startCrossSection,
+        capEnd: !alley.endCrossSection,
+        startBridge: alleyStartEdge ? pairEdgeCorners(alleyStartEdge, alley.startCrossSection) : null,
+        endBridge: alleyEndEdge ? pairEdgeCorners(alleyEndEdge, alley.endCrossSection) : null,
+        fillLayer: entranceRoadFillLayer,
+        labelsLayer: entranceRoadLabelsLayer,
+      });
       if (alley.startCrossSection) {
-        const alleyStartEdge = ribbonEdgeAtEnd(alley.points, true, alleyWidths);
         fillRibbonJunction(alleyStartEdge, alley.startCrossSection, entranceRoadFillLayer);
       }
       if (alley.endCrossSection) {
-        const alleyEndEdge = ribbonEdgeAtEnd(alley.points, false, alleyWidths);
         fillRibbonJunction(alleyEndEdge, alley.endCrossSection, entranceRoadFillLayer);
       }
     });
