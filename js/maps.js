@@ -958,16 +958,12 @@
     }
     return { segLens, total };
   }
-  // The point AND local direction (as a CSS-rotate-ready degrees value,
-  // RAW -- not normalized to stay right-side-up, see renderFlowingRoadText
-  // for why that's decided once per word rather than per letter) at a
-  // given absolute distance (meters, clamped to the route's length) along
-  // a multi-point route -- used to lay individual letters down flowing
-  // along the road, each one angled to match the road's direction right
-  // where it sits, the way a road name painted on pavement (or a curved
-  // road label on a map) follows the road instead of sitting next to it
-  // as a flat block of text.
-  function pointAndBearingAtDistance(points, segLens, total, distance) {
+  // Just the point (no angle) at a given absolute distance along a
+  // multi-point route, clamped to the route's length. Factored out of
+  // pointAndBearingAtDistance below so that function can sample this at
+  // three nearby distances (for a smoothed angle) without walking the
+  // route three separate times by hand.
+  function pointAtDistance(points, segLens, total, distance) {
     const target = Math.max(0, Math.min(total, distance));
     let remaining = target;
     for (let i = 0; i < segLens.length; i++) {
@@ -976,21 +972,52 @@
         const t = len ? Math.min(1, remaining / len) : 0;
         const a = points[i];
         const b = points[i + 1];
-        const lat = a.lat + (b.lat - a.lat) * t;
-        const lng = a.lng + (b.lng - a.lng) * t;
-        const { latM, lngM } = metersPerDegreeAt(a.lat);
-        const dxM = (b.lng - a.lng) * lngM;
-        const dyM = (b.lat - a.lat) * latM; // +north
-        // Screen x = east, screen y = -north (screen y grows downward) --
-        // atan2(screenY, screenX) is then the CSS rotate() angle (degrees,
-        // clockwise) that points a horizontal glyph along this segment.
-        const angle = (Math.atan2(-dyM, dxM) * 180) / Math.PI;
-        return { lat, lng, angle };
+        return { lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t };
       }
       remaining -= len;
     }
     const last = points[points.length - 1];
-    return { lat: last.lat, lng: last.lng, angle: 0 };
+    return { lat: last.lat, lng: last.lng };
+  }
+  // Degrees (CSS-rotate-ready, clockwise, RAW -- not normalized to stay
+  // right-side-up, see renderFlowingRoadText for why that's decided once
+  // per word rather than per letter) pointing from a toward b.
+  function bearingBetween(a, b) {
+    const { latM, lngM } = metersPerDegreeAt(a.lat);
+    const dxM = (b.lng - a.lng) * lngM;
+    const dyM = (b.lat - a.lat) * latM; // +north
+    // Screen x = east, screen y = -north (screen y grows downward) --
+    // atan2(screenY, screenX) is then the CSS rotate() angle that points a
+    // horizontal glyph from a toward b.
+    return (Math.atan2(-dyM, dxM) * 180) / Math.PI;
+  }
+  // How far to either side of a letter's own position to sample when
+  // computing its rotation (see pointAndBearingAtDistance) -- comfortably
+  // smaller than a letter's own spacing (FLOW_LETTER_BASE_SPACING_METERS)
+  // so it still tracks a real curve rather than flattening it, but wide
+  // enough to bridge a single sharp vertex between two waypoints.
+  const FLOW_ANGLE_WINDOW_METERS = 1.5;
+  // The point AND local direction at a given absolute distance (meters,
+  // clamped to the route's length) along a multi-point route -- used to
+  // lay individual letters down flowing along the road, each one angled
+  // to match the road's direction right where it sits, the way a road
+  // name painted on pavement (or a curved road label on a map) follows
+  // the road instead of sitting next to it as a flat block of text. The
+  // angle is sampled over a short window straddling the target distance
+  // (see FLOW_ANGLE_WINDOW_METERS) rather than read off whichever single
+  // waypoint-to-waypoint segment the exact distance happens to land on --
+  // a hand-placed waypoint chain often has a real vertex (a sharp turn in
+  // the recorded path) sitting almost exactly where a letter's own
+  // position falls, which made that one letter visibly "kink" relative to
+  // its neighbors even though the road's overall curve there reads as
+  // smooth (e.g. Rec Road's leading "R" once landed right on such a
+  // vertex). Position itself still uses the exact target distance.
+  function pointAndBearingAtDistance(points, segLens, total, distance) {
+    const here = pointAtDistance(points, segLens, total, distance);
+    const before = pointAtDistance(points, segLens, total, distance - FLOW_ANGLE_WINDOW_METERS);
+    const after = pointAtDistance(points, segLens, total, distance + FLOW_ANGLE_WINDOW_METERS);
+    const angle = bearingBetween(before, after);
+    return { lat: here.lat, lng: here.lng, angle };
   }
 
   // A procedural dirt/gravel texture (mottled tan, no external image) --
@@ -1531,12 +1558,39 @@
   // waypoint route (the next one past whatever's defined here) falls
   // through to the normal dashed-line rendering like any other path,
   // same as before alleys existed.
+  // Waypoint 10 -- a connector between two ALLEYS rather than between the
+  // two main roads (per Heath: "connect waypoint 10 from Alley One to Rec
+  // Road"). Same rendering machinery as ALLEY_DEFS (same width, same
+  // snap-and-bridge system via snapAlleyToRoads/crossSectionAtHit), just
+  // aimed at two other alleys' own ribbons instead of In Road/Out Road --
+  // snapAlleyToRoads only ever cared about two polylines-with-widths, not
+  // which ones specifically, so no new snapping logic is needed. No name
+  // requested for this one yet, so it's unlabeled (label: "" -- see
+  // drawTexturedRoad/renderFlowingRoadText, an empty string just draws no
+  // letters rather than needing a null-text special case).
+  const ALLEY_CONNECTOR_DEFS = [{ pathIndex: 9, label: "", fromPathIndex: 3, toPathIndex: 8 }];
   function hasAlleyRoad(rec, pathIndex) {
     return (
       currentMapId === "amazon" &&
       hasEntranceRoad(rec) &&
       hasOutRoad(rec) &&
       ALLEY_DEFS.some((def) => def.pathIndex === pathIndex) &&
+      !!rec.paths[pathIndex]?.points?.length &&
+      rec.paths[pathIndex].points.length >= 2
+    );
+  }
+  // Same idea as hasAlleyRoad, for an alley-to-alley connector: also
+  // requires both ends' own alleys to actually exist, since a connector
+  // with nothing real to connect to can't be rendered.
+  function hasConnectorRoad(rec, pathIndex) {
+    const def = ALLEY_CONNECTOR_DEFS.find((d) => d.pathIndex === pathIndex);
+    return (
+      !!def &&
+      currentMapId === "amazon" &&
+      hasEntranceRoad(rec) &&
+      hasOutRoad(rec) &&
+      hasAlleyRoad(rec, def.fromPathIndex) &&
+      hasAlleyRoad(rec, def.toPathIndex) &&
       !!rec.paths[pathIndex]?.points?.length &&
       rec.paths[pathIndex].points.length >= 2
     );
@@ -1611,6 +1665,7 @@
         combinedWidths = snapped.inRoadWidths;
         outRoadPoints = snapped.outRoadPolyline;
         alleysToDraw.push({
+          pathIndex: def.pathIndex,
           points: snapped.alleyPoints,
           label: def.label,
           startCrossSection: snapped.startCrossSection,
@@ -1618,6 +1673,39 @@
         });
       });
     }
+
+    // Connectors between two ALLEYS (waypoint 10: Alley One <-> Rec
+    // Road) run as a second pass, after every main alley above has its
+    // final snapped points -- snapAlleyToRoads doesn't care whether the
+    // two "roads" it's snapping onto are In/Out Road or another alley's
+    // own ribbon, so this reuses it directly, treating the two named
+    // alleys' current entries in alleysToDraw as the two roads. Updates
+    // those two entries' own points in place (same "insert a real shared
+    // vertex" trick as above) so their own drawTexturedRoad call below
+    // -- which hasn't run yet, drawing only happens after this whole
+    // function's snapping phase -- picks up the junction.
+    ALLEY_CONNECTOR_DEFS.forEach((def) => {
+      if (!hasConnectorRoad(rec, def.pathIndex)) return;
+      const fromEntry = alleysToDraw.find((a) => a.pathIndex === def.fromPathIndex);
+      const toEntry = alleysToDraw.find((a) => a.pathIndex === def.toPathIndex);
+      if (!fromEntry || !toEntry) return;
+      const snapped = snapAlleyToRoads(
+        rec.paths[def.pathIndex].points,
+        fromEntry.points,
+        toEntry.points,
+        OUT_ROAD_WIDTHS,
+        OUT_ROAD_WIDTHS
+      );
+      fromEntry.points = snapped.inRoadPolyline;
+      toEntry.points = snapped.outRoadPolyline;
+      alleysToDraw.push({
+        pathIndex: def.pathIndex,
+        points: snapped.alleyPoints,
+        label: def.label,
+        startCrossSection: snapped.startCrossSection,
+        endCrossSection: snapped.endCrossSection,
+      });
+    });
 
     // Defensive cleanup: all the snapping above can leave two points
     // sitting almost on top of each other (an alley connecting right
@@ -1742,7 +1830,7 @@
       if (!pathsInteractive) {
         if (hideAsEntranceRoad && pathIndex < 2) return;
         if (hideAsOutRoad && pathIndex === 2) return;
-        if (hasAlleyRoad(rec, pathIndex)) return;
+        if (hasAlleyRoad(rec, pathIndex) || hasConnectorRoad(rec, pathIndex)) return;
       }
       const pathNumber = pathIndex + 1;
       const pathColor = pathColorFor(pathIndex);
