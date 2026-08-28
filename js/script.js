@@ -732,6 +732,14 @@
   // survives that wipe.
   const FEE_KEYS = window.DD.calc.FEE_TIERS;
 
+  // Payment-method split (Cash / Phone CC / Online CC) -- same "cash",
+  // "phone_cc", "online_cc" values the Order Type field already saves on
+  // every entry (see orderTypeLabel below), just counted per stats bucket
+  // the same way fee tiers are. Order matches the Order Type dropdown's
+  // own order, kept fixed everywhere it's displayed (chart legend, etc.)
+  // rather than sorted by count.
+  const ORDER_TYPE_KEYS = ["cash", "phone_cc", "online_cc"];
+
   // Tip-amount distribution buckets — half-open ranges [lower, upper), so
   // e.g. a $2.00 tip lands in "2-3", not "1-2". Only nonzero tips are
   // bucketed (matches "Number of Tips" being a nonzero-tip count).
@@ -763,7 +771,9 @@
     FEE_KEYS.forEach((f) => (feeCounts[f] = 0));
     const tipBuckets = {};
     TIP_BUCKET_DEFS.forEach((b) => (tipBuckets[b.key] = 0));
-    return { deliveries: 0, tipCount: 0, tipValue: 0, orderTotal: 0, feeCounts, tipBuckets };
+    const orderTypeCounts = {};
+    ORDER_TYPE_KEYS.forEach((k) => (orderTypeCounts[k] = 0));
+    return { deliveries: 0, tipCount: 0, tipValue: 0, orderTotal: 0, feeCounts, tipBuckets, orderTypeCounts };
   }
   function addBucket(target, bucket) {
     if (!bucket) return;
@@ -773,6 +783,11 @@
     target.orderTotal += bucket.orderTotal || 0;
     FEE_KEYS.forEach((f) => (target.feeCounts[f] += bucket.feeCounts?.[f] || 0));
     TIP_BUCKET_DEFS.forEach((b) => (target.tipBuckets[b.key] += bucket.tipBuckets?.[b.key] || 0));
+    // Older archived hours (before this field existed) simply have no
+    // orderTypeCounts key -- ?. below treats that the same as all-zero
+    // rather than throwing, so old data displays fine with an
+    // undercounted (not broken) payment-type chart.
+    ORDER_TYPE_KEYS.forEach((k) => (target.orderTypeCounts[k] += bucket.orderTypeCounts?.[k] || 0));
   }
 
   // Tip-to-order-total, both as a ratio ("1 : 7.2" -- for every $1 of
@@ -836,6 +851,9 @@
       }
       if (entry.fee && bucket.feeCounts[entry.fee] !== undefined) {
         bucket.feeCounts[entry.fee] += 1;
+      }
+      if (entry.orderType && bucket.orderTypeCounts[entry.orderType] !== undefined) {
+        bucket.orderTypeCounts[entry.orderType] += 1;
       }
     });
     return deltas;
@@ -1045,6 +1063,10 @@
   };
   const FEE_CHART_HUES = ["blue", "orange", "aqua", "yellow", "magenta", "green"]; // matches FEE_KEYS order
   const LUNCH_DINNER_HUES = { light: ["#55A6D9", "#F28705"], dark: ["#3D8FC7", "#D97904"] };
+  // Cash / Phone CC / Online CC, matching ORDER_TYPE_KEYS order above.
+  // Validated separately from FEE_CHART_HUES (node scripts/validate_palette.js
+  // from the dataviz skill, both light and dark surfaces) -- passes clean.
+  const ORDER_TYPE_CHART_HUES = ["aqua", "blue", "orange"];
 
   function isDarkMode() {
     return document.documentElement.getAttribute("data-theme") === "dark";
@@ -1052,6 +1074,11 @@
   function feeChartColor(index) {
     const mode = isDarkMode() ? "dark" : "light";
     const hue = FEE_CHART_HUES[index % FEE_CHART_HUES.length];
+    return CHART_PALETTE[mode][hue];
+  }
+  function orderTypeChartColor(index) {
+    const mode = isDarkMode() ? "dark" : "light";
+    const hue = ORDER_TYPE_CHART_HUES[index % ORDER_TYPE_CHART_HUES.length];
     return CHART_PALETTE[mode][hue];
   }
 
@@ -1143,11 +1170,17 @@
     container.appendChild(chart);
   }
 
-  // SVG donut for a true part-to-whole ratio (kept to 2-3 slices, per the
-  // colorblind-safety cap on part-to-whole palettes). Center shows the
-  // combined total; the legend below prints each slice's own label,
-  // value, and percentage as real text -- the ring's colors are backup,
-  // not the only way to read the split.
+  // SVG donut for a true part-to-whole ratio. Best kept to 2-3 slices (the
+  // colorblind-safety cap most categorical palettes clear cleanly); a
+  // larger set like the 6 delivery-fee tiers can still work, but only
+  // when the exact palette's been run through the dataviz skill's
+  // validator first (node scripts/validate_palette.js) to confirm every
+  // adjacent pair actually clears CVD separation -- don't add slices to
+  // an existing donut without re-validating. Center shows the combined
+  // total; the legend below prints each slice's own label, value, and
+  // percentage as real text -- the ring's colors are backup, not the
+  // only way to read the split, which is what makes the secondary
+  // encoding the validator asks for at 6+ slices already satisfied here.
   const SVG_NS = "http://www.w3.org/2000/svg";
   function buildDonutChart(container, slices, formatValue, centerLabel) {
     const total = slices.reduce((s, x) => s + x.value, 0);
@@ -1356,7 +1389,19 @@
         value: t.feeCounts[tier] || 0,
         color: feeChartColor(i),
       }));
-      buildBarChart(fees, feeItems, (v) => String(v), "Deliveries by fee tier");
+      buildDonutChart(fees, feeItems, (v) => String(v), "Deliveries");
+    }
+
+    const paymentType = addStatsSection(statsBody, "Payment Type");
+    if (!t.deliveries) {
+      addStatsEmptyNote(paymentType, "No deliveries recorded for this period.");
+    } else {
+      const paymentItems = ORDER_TYPE_KEYS.map((key, i) => ({
+        label: orderTypeLabel(key),
+        value: t.orderTypeCounts[key] || 0,
+        color: orderTypeChartColor(i),
+      }));
+      buildDonutChart(paymentType, paymentItems, (v) => String(v), "Deliveries");
     }
 
     const shiftSection = addStatsSection(statsBody, "Shift Breakdown");
