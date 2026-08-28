@@ -1518,8 +1518,9 @@
     { pathIndex: 5, label: "ALLEY THREE" },
     { pathIndex: 6, label: "ALLEY FOUR" },
     { pathIndex: 7, label: "OFFSHOOT ALLEY" },
+    { pathIndex: 8, label: "REC ROAD" },
   ];
-  // NOTE: must only match ALLEY_DEFS's own alley slots (currently 3-7) --
+  // NOTE: must only match ALLEY_DEFS's own alley slots (currently 3-8) --
   // this is used both to decide which paths get drawn as an alley road
   // AND (in renderPermanentPaths) to decide which paths get their normal
   // line+badges HIDDEN. Earlier this only checked "does this pathIndex
