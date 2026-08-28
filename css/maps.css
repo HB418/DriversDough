@@ -479,6 +479,21 @@
   padding: 0.35rem 0.5rem;
   font-size: 0.85rem;
 }
+/* Off (plain btn-secondary look) by default every time Setup Mode turns
+   on -- waypoint lines/badges and border drag handles are both hidden
+   until this is pressed, so tapping the map to place house-number pins
+   isn't fighting a screen full of other clickable dots. See
+   roadEditOn/renderPermanentPaths/renderBorderHandles in maps.js. */
+.dd-map-setup-roads-toggle.is-active {
+  background: var(--dd-sky) !important;
+  color: #fff !important;
+  border-color: var(--dd-sky) !important;
+}
+:root[data-theme="dark"] .dd-map-setup-roads-toggle.is-active {
+  background: var(--dd-amber) !important;
+  border-color: var(--dd-amber) !important;
+  color: #1f2227 !important;
+}
 /* .dd-map-setup-row and .dd-map-setup-actions both set their own
    display:flex above, which ties with the generic .hide{display:none}
    utility in style.css on specificity — and since maps.css loads AFTER

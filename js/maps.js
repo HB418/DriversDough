@@ -413,6 +413,14 @@
   let pinMarkersByNumber = {};
   let currentMapId = null;
   let setupModeOn = false;
+  // Whether waypoint lines/badges and border drag handles are currently
+  // shown in Setup Mode -- off by default every time Setup Mode turns on
+  // (see setSetupMode), toggled via the "Edit Roads" button. Heath: with
+  // both of those visible by default, Setup Mode got crowded with white
+  // dots/badges right where he's trying to tap to place house-number
+  // pins -- this tucks them behind a button instead of showing them
+  // always. Placing/editing PINS is entirely unaffected either way.
+  let roadEditOn = false;
   let pendingMarker = null;
   let pendingRotation = 0;
   let pendingDefaultNumber = null;
@@ -479,6 +487,7 @@
   const setupPathUndoBtn = document.getElementById("dd-map-setup-path-undo");
   const setupExitBtn = document.getElementById("dd-map-setup-exit");
   const addWaypointBtn = document.getElementById("dd-map-setup-add-waypoint");
+  const setupRoadsToggleBtn = document.getElementById("dd-map-setup-roads-toggle");
   const crosshairEl = document.getElementById("dd-map-crosshair");
   const searchBar = document.querySelector(".dd-map-searchbar");
 
@@ -2055,7 +2064,7 @@
   // show/hide the handles.
   function renderBorderHandles() {
     borderHandlesLayer?.clearLayers();
-    if (!setupModeOn || currentMapId !== "amazon") return;
+    if (!setupModeOn || !roadEditOn || currentMapId !== "amazon") return;
     const scale = scaleForZoom(mapLeaflet);
     lastBorderVertices.forEach((v) => {
       const marker = L.marker([v.display.lat, v.display.lng], {
@@ -2410,7 +2419,12 @@
     permanentPathsLayer.clearLayers();
     const rec = getMapRecord(currentMapId);
     const scale = scaleForZoom(mapLeaflet);
-    const pathsInteractive = setupModeOn;
+    // Gated on roadEditOn too (not just setupModeOn) -- see its own
+    // comment. Off by default, so a road-covered path's raw dashed
+    // line/badges stay hidden (same as outside Setup Mode) and an
+    // uncovered property's path is visible but not clickable, until
+    // "Edit Roads" is pressed.
+    const pathsInteractive = setupModeOn && roadEditOn;
     const hideAsEntranceRoad = hasEntranceRoad(rec);
     const hideAsOutRoad = hasOutRoad(rec);
     // Render the road/alley overlay FIRST, before deciding whether to hide
@@ -2427,13 +2441,16 @@
       // their visual now, so normally skip their own colored line + S/E
       // badges entirely rather than drawing both on top of each other.
       //
-      // BUT NOT in Setup Mode: this used to hide them unconditionally,
-      // which meant once a path became part of a road overlay there was
-      // no longer any way to see its real pins OR click into editing it
-      // ever again -- the click target that starts an edit was exactly
-      // what got hidden. Setup Mode is specifically the admin view for
-      // inspecting/managing the real saved data, so it always shows the
-      // real pins for every path, road-covered or not.
+      // BUT NOT while roadEditOn (the "Edit Roads" toggle) is on: without
+      // that, once a path became part of a road overlay there'd be no way
+      // to see its real points OR click into editing it ever again -- the
+      // click target that starts an edit was exactly what got hidden.
+      // Pressing "Edit Roads" is the admin view for inspecting/managing
+      // the real saved data, showing the real points for every path,
+      // road-covered or not -- but it's OFF by default even in Setup
+      // Mode now (previously it was on whenever Setup Mode was), so
+      // placing house pins isn't fighting a screen full of waypoint
+      // badges too.
       if (!pathsInteractive && entranceRoadOk) {
         if (hideAsEntranceRoad && pathIndex < 2) return;
         if (hideAsOutRoad && pathIndex === 2) return;
@@ -2551,6 +2568,12 @@
     // eats vertical space above an already-cramped setup bar.
     searchBar?.classList.toggle("hide", on);
     if (on && setupInstructions) setupInstructions.textContent = readyMessage();
+    // "Edit Roads" always resets to off whenever Setup Mode is toggled
+    // (entered OR exited) -- Heath wants pin placement to start clean of
+    // border handles/waypoint badges every time, not just remembered from
+    // last visit.
+    roadEditOn = false;
+    setupRoadsToggleBtn?.classList.remove("is-active");
     // Border drag handles are only ever shown in Setup Mode -- cheap
     // redraw from the last computed border, no need to recompute anything.
     renderBorderHandles();
@@ -2561,6 +2584,17 @@
     setSetupMode(!setupModeOn);
   });
   setupExitBtn?.addEventListener("click", () => setSetupMode(false));
+  setupRoadsToggleBtn?.addEventListener("click", () => {
+    roadEditOn = !roadEditOn;
+    setupRoadsToggleBtn.classList.toggle("is-active", roadEditOn);
+    // Re-render both layers this toggle controls: waypoint markers/lines
+    // (via renderPermanentPaths, which also redraws the road overlay + its
+    // border/handles) and the border handles directly, in case there's
+    // currently no entrance road on this map (renderPermanentPaths alone
+    // wouldn't touch borderHandlesLayer in that case).
+    renderPermanentPaths();
+    renderBorderHandles();
+  });
 
   // Drops a new waypoint at the current map center -- pan the map, then
   // press the button again for the next point. This (not a map tap) is
