@@ -831,25 +831,23 @@
       bRight: offsetLatLng(b, -nx * bWidth.right, -ny * bWidth.right),
     };
   }
-  // Tiny outward nudge applied to every ribbon piece (see inflatePiece
-  // below) so neighboring pieces overlap by a hair instead of sharing an
-  // exact boundary. Purely a rendering fix, invisible at road scale (a
-  // fraction of a single width-length) -- see inflatePiece's comment for
-  // what it's actually fixing.
+  // Grows one ribbon piece (quad or triangle) a hair outward from its own
+  // centroid before it's drawn. Each piece is its own separate L.polygon
+  // (see drawTexturedRoad/fillRibbonJunction below), and two of those that
+  // only TOUCH along a shared edge -- even at identical coordinates -- can
+  // still show a hairline gap there: the browser anti-aliases each one's
+  // boundary independently, and the dark map underneath can peek through
+  // that softened seam. That's what showed up as thin dark cracks cutting
+  // across Rec Road. Growing every piece a fraction of a meter past its
+  // true edge makes neighboring pieces overlap instead of merely touching,
+  // which hides the seam -- and since every piece is still its OWN element
+  // (not merged into one shape), an overlap just paints the same dirt
+  // color twice; it can't create a hole or distort anything, unlike
+  // merging pieces into one multi-ring shape would (that's the approach
+  // that got reverted -- it touched how every road on the map is built and
+  // caused real damage against Heath's actual waypoint data). This only
+  // changes each piece's own four-or-so corners by a fraction of a meter.
   const RIBBON_PIECE_OVERLAP_METERS = 0.15;
-  // Two shapes that only TOUCH along a shared edge -- even as two rings
-  // inside the very same SVG path -- can still show a hairline gap along
-  // that edge: anti-aliasing softens each ring's own boundary independently,
-  // and where neither ring actually overlaps the other, the (dark) map
-  // underneath can peek through that softened seam. This showed up as thin
-  // dark cracks cutting across a road, worst right at sharp bends (each
-  // vertex's quad-to-wedge-triangle boundary). The fix used everywhere
-  // shapes are stitched like this (game engines, GIS renderers) is to grow
-  // each piece a hair past its true edge so neighbors overlap instead of
-  // merely touching -- with fillRule "nonzero" (see drawTexturedRoad) an
-  // overlap always renders solid, so this can't create the opposite
-  // problem (a phantom hole). Growing away from the piece's OWN centroid
-  // keeps it a simple/convex shape at any width or angle.
   function inflatePiece(piece) {
     if (piece.length < 3) return piece;
     const { latM, lngM } = metersPerDegreeAt(piece[0].lat);
@@ -932,28 +930,23 @@
   // be a genuine gap apart. "left"/"right" don't necessarily correspond
   // between two independently-oriented roads, so pick whichever pairing
   // has the smaller total span (same trick as combinePointSequences).
-  // Returns the two bridging triangles (as [lat,lng] rings) that stitch two
-  // separate ribbons' edges together, rather than drawing them directly --
-  // see drawTexturedRoad's own comment for why: a junction drawn as its OWN
-  // separate L.polygon still shows a hairline seam against the road/alley
-  // it's bridging, same anti-aliasing issue buildRibbonPieces' pieces used
-  // to have against EACH OTHER. Callers fold these rings into whichever
-  // road's own drawTexturedRoad(..., {extraRings}) call they belong with,
-  // so the bridge ends up in the SAME single path as that road/alley.
-  function ribbonJunctionRings(edgeA, edgeB) {
+  function fillRibbonJunction(edgeA, edgeB, fillLayer) {
     const straight = metersBetween(edgeA.left, edgeB.left) + metersBetween(edgeA.right, edgeB.right);
     const crossed = metersBetween(edgeA.left, edgeB.right) + metersBetween(edgeA.right, edgeB.left);
     const paired = straight <= crossed ? { left: edgeB.left, right: edgeB.right } : { left: edgeB.right, right: edgeB.left };
-    // Same inflatePiece nudge buildRibbonPieces applies to its own
-    // pieces -- these two triangles border the road/alley they're bridging
-    // (and each other), so without it they'd trade the seam this whole
-    // system is fixing for a seam right at the bridge's own edges instead.
-    return [
+    [
       [edgeA.left, paired.left, paired.right],
       [edgeA.left, paired.right, edgeA.right],
     ]
       .map(inflatePiece)
-      .map((tri) => tri.map((p) => [p.lat, p.lng]));
+      .forEach((tri) => {
+        fillLayer.addLayer(
+          L.polygon(
+            tri.map((p) => [p.lat, p.lng]),
+            { stroke: false, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 1, interactive: false }
+          )
+        );
+      });
   }
   // The real left/right ribbon-edge points AT one END of a route (index 0
   // if `atStart`, otherwise the last index) -- literally the aLeft/aRight
@@ -1312,42 +1305,14 @@
     // on top of that. Dropping the stroke entirely removes the seam
     // lines; the matching dirt-pattern fill on both sides of a shared
     // edge already reads as one continuous road with no border to draw.
-    //
-    // Even with no stroke, each piece used to be its OWN separate
-    // L.polygon/SVG element -- two elements whose edges land on exactly
-    // the same coordinates still each get anti-aliased independently by
-    // the browser, and that can leave a hairline gap right along their
-    // shared edge (visible as thin dark cracks cutting across a road,
-    // worst at every waypoint vertex, e.g. what showed up along Rec
-    // Road). Passing ALL of a road's pieces to ONE L.polygon call as
-    // separate rings makes them one SVG path filled in a single pass --
-    // adjoining rings within one path don't get that per-element seam.
-    // `opts.extraRings` (optional): any ribbonJunctionRings() bridges that
-    // belong to THIS road/alley (its own end-cap junctions) get folded
-    // into the very same polygon call for the same reason -- a junction
-    // bridge drawn as its own separate element would still show a seam
-    // against the road it's stitched to, even though each side is
-    // individually seamless now.
-    // fillRule "nonzero" (Leaflet's Path default is "evenodd") -- pieces
-    // that legitimately overlap a little at a sharp bend (the wedge
-    // triangles' whole job is covering the joint, so a slight overlap
-    // with their neighboring quad is fine) would otherwise cancel out
-    // to a HOLE under evenodd wherever two same-color fills overlap,
-    // trading the hairline-seam problem for a worse one.
-    const ribbonRings = buildRibbonPieces(points, widthAt)
-      .map((piece) => piece.map((p) => [p.lat, p.lng]))
-      .concat(opts.extraRings || []);
-    if (ribbonRings.length) {
+    buildRibbonPieces(points, widthAt).forEach((piece) => {
       opts.fillLayer.addLayer(
-        L.polygon(ribbonRings, {
-          stroke: false,
-          fillColor: "url(#dd-dirt-pattern)",
-          fillOpacity: 1,
-          fillRule: "nonzero",
-          interactive: false,
-        })
+        L.polygon(
+          piece.map((p) => [p.lat, p.lng]),
+          { stroke: false, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 1, interactive: false }
+        )
       );
-    }
+    });
 
     // The ribbon's real visual middle -- for a symmetric width (inside ==
     // outside, e.g. the out road) this offset is 0 and centerline is just
@@ -1832,23 +1797,6 @@
       // Alley insertions above only ever land strictly BETWEEN existing
       // points, never replacing index 0, so this stays the true free end
       // regardless of how many alleys touched this road.
-      //
-      // In Road's real far end and Out Road's real near end are two
-      // independent points that may sit a real gap apart (no longer forced
-      // together into a shared midpoint). Bridge that gap using each
-      // road's own real end cap, same wedge-filling idea as
-      // buildRibbonPieces' interior joints, just applied across two
-      // separate roads instead of within one -- computed here, BEFORE
-      // combined is actually drawn, purely so its rings can be folded into
-      // In Road's own polygon call below (see drawTexturedRoad's
-      // extraRings comment for why that avoids yet another seam).
-      const mainJunctionRings =
-        combined && outRoadPoints
-          ? ribbonJunctionRings(
-              ribbonEdgeAtEnd(combined, false, combinedWidths),
-              ribbonEdgeAtEnd(outRoadPoints, true, { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS })
-            )
-          : [];
       drawTexturedRoad(combined, {
         widths: combinedWidths,
         labelText: "IN ROAD",
@@ -1856,7 +1804,6 @@
         startLabelOffset: [-4, 14],
         fillLayer: entranceRoadFillLayer,
         labelsLayer: entranceRoadLabelsLayer,
-        extraRings: mainJunctionRings,
       });
     }
 
@@ -1872,6 +1819,15 @@
     }
 
     alleysToDraw.forEach((alley) => {
+      drawTexturedRoad(alley.points, {
+        insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+        outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
+        labelText: alley.label,
+        labelFractions: [0.5],
+        startLabelText: null,
+        fillLayer: entranceRoadFillLayer,
+        labelsLayer: entranceRoadLabelsLayer,
+      });
       // Bridge the alley's own two end caps onto the road's real surface
       // at each connection point. Inserting a shared vertex into the
       // road's polyline (snapAlleyToRoads above) keeps the ROAD itself
@@ -1881,36 +1837,34 @@
       // -- not the road's local cross-section. Left untouched, the two
       // ribbons only ever meet at a single point, leaving a real
       // triangular gap. See crossSectionAtHit's comment for the full
-      // reasoning. Computed BEFORE drawing the alley itself so these
-      // bridge rings can ride along in the SAME polygon call as the
-      // alley's own pieces (extraRings) instead of becoming a separate,
-      // seam-prone element.
+      // reasoning.
       // A dead-end spur (e.g. Offshoot Alley) only got ONE end snapped --
       // see ALLEY_MAX_SNAP_METERS above -- so the other cross-section is
       // null here. Nothing to bridge there: that end was never forced
       // onto a road, so it just keeps its own natural flat end cap,
       // exactly like any other dead end.
       const alleyWidths = { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS };
-      const alleyExtraRings = [];
       if (alley.startCrossSection) {
         const alleyStartEdge = ribbonEdgeAtEnd(alley.points, true, alleyWidths);
-        alleyExtraRings.push(...ribbonJunctionRings(alleyStartEdge, alley.startCrossSection));
+        fillRibbonJunction(alleyStartEdge, alley.startCrossSection, entranceRoadFillLayer);
       }
       if (alley.endCrossSection) {
         const alleyEndEdge = ribbonEdgeAtEnd(alley.points, false, alleyWidths);
-        alleyExtraRings.push(...ribbonJunctionRings(alleyEndEdge, alley.endCrossSection));
+        fillRibbonJunction(alleyEndEdge, alley.endCrossSection, entranceRoadFillLayer);
       }
-      drawTexturedRoad(alley.points, {
-        insideMeters: OUT_ROAD_HALF_WIDTH_METERS,
-        outsideMeters: OUT_ROAD_HALF_WIDTH_METERS,
-        labelText: alley.label,
-        labelFractions: [0.5],
-        startLabelText: null,
-        fillLayer: entranceRoadFillLayer,
-        labelsLayer: entranceRoadLabelsLayer,
-        extraRings: alleyExtraRings,
-      });
     });
+
+    // In Road's real far end and Out Road's real near end are two
+    // independent points that may sit a real gap apart (see above -- no
+    // longer forced together into a shared midpoint). Bridge that gap
+    // using each road's own real end cap, same wedge-filling idea as
+    // buildRibbonPieces' interior joints, just applied across two
+    // separate roads instead of within one.
+    if (combined && outRoadPoints) {
+      const entranceEdge = ribbonEdgeAtEnd(combined, false, combinedWidths);
+      const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS });
+      fillRibbonJunction(entranceEdge, outRoadEdge, entranceRoadFillLayer);
+    }
     return true;
     } catch (err) {
       console.error(
