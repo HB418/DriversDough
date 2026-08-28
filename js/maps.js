@@ -56,11 +56,17 @@
   // pathsCache[mapId] is the same idea for waypoint paths -- null until
   // fetched, then an array of {id, mapId, points} where points is an
   // ordered list of {lat,lng} (first = Start, last = End).
+  // borderOverridesCache[mapId] is the same idea again, for hand-dragged
+  // border-point adjustments (see BORDER_OVERRIDE_MATCH_METERS/
+  // renderBorderHandles below) -- null until fetched, then an array of
+  // {id, origLat, origLng, newLat, newLng}.
   let pinsCache = {};
   let pathsCache = {};
+  let borderOverridesCache = {};
   MAP_DEFS.forEach((def) => {
     pinsCache[def.id] = null;
     pathsCache[def.id] = null;
+    borderOverridesCache[def.id] = null;
   });
 
   function mapPinRow(row) {
@@ -106,12 +112,25 @@
       return false;
     }
   }
+  function mapBorderOverrideRow(row) {
+    return { id: row.id, origLat: row.orig_lat, origLng: row.orig_lng, newLat: row.new_lat, newLng: row.new_lng };
+  }
+  async function refreshBorderOverridesForMap(mapId) {
+    try {
+      const { data, error } = await sb.from("border_overrides").select("*").eq("map_id", mapId);
+      if (error || !data) return false;
+      borderOverridesCache[mapId] = data.map(mapBorderOverrideRow);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
   // Loads pin counts for every property at once, for the picker screen.
   async function refreshAllPinCounts() {
     await Promise.all(MAP_DEFS.map((def) => refreshPinsForMap(def.id)));
   }
   function getMapRecord(id) {
-    return { pins: pinsCache[id] || [], paths: pathsCache[id] || [] };
+    return { pins: pinsCache[id] || [], paths: pathsCache[id] || [], borderOverrides: borderOverridesCache[id] || [] };
   }
 
   // road_key (the manual road-choice override, only set for a pin the
@@ -175,6 +194,30 @@
     const { data: result, error } = await sb.rpc("dd_delete_path", {
       p_token: window.DD.auth.getToken(),
       p_path_id: pathId,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
+  }
+  // Saves/moves a border-point override (see BORDER_OVERRIDE_MATCH_METERS
+  // below) -- upsert-by-proximity happens server-side in
+  // dd_set_border_override, so this can always be called plainly, whether
+  // this point already has an override or not.
+  async function saveBorderOverride(mapId, origLat, origLng, newLat, newLng) {
+    const { data: result, error } = await sb.rpc("dd_set_border_override", {
+      p_token: window.DD.auth.getToken(),
+      p_map_id: mapId,
+      p_orig_lat: origLat,
+      p_orig_lng: origLng,
+      p_new_lat: newLat,
+      p_new_lng: newLng,
+    });
+    if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
+    return result;
+  }
+  async function deleteBorderOverride(overrideId) {
+    const { data: result, error } = await sb.rpc("dd_delete_border_override", {
+      p_token: window.DD.auth.getToken(),
+      p_id: overrideId,
     });
     if (error) return { ok: false, error: "Couldn't reach the server. Check your connection and try again." };
     return result;
@@ -390,6 +433,18 @@
   let permanentPathsLayer = null;
   let entranceRoadFillLayer = null; // dirt-road ribbon, rendered BELOW the path lines/badges
   let entranceRoadLabelsLayer = null; // "ENTRANCE"/"IN ROAD" text, rendered ABOVE everything
+  let entranceRoadBorderLayer = null; // the computed border stroke -- see computeRoadBorderPolygons
+  let borderHandlesLayer = null; // draggable border-point handles, shown only in Setup Mode
+  // The flat list of {raw, display, overrideId} vertices from the LAST
+  // computed border render -- what renderBorderHandles (re)draws from
+  // whenever Setup Mode toggles, without re-running the (heavier) union.
+  let lastBorderVertices = [];
+  // The exact fill pieces (see drawTexturedRoad/fillRibbonJunction's
+  // `piecesForUnion`) collected on the last renderEntranceRoad pass --
+  // reused by refreshBorderAfterOverrideChange so a drag only needs to
+  // redo the union + reapply overrides, not re-run the whole road-drawing
+  // pipeline.
+  let lastPiecesForUnion = [];
   let pendingPathPoints = []; // [{lat,lng}, ...] while placing a new waypoint chain or editing an existing one
   let pendingPathMarkers = []; // parallel Leaflet markers, one per pendingPathPoints entry
   let pendingPathLine = null; // L.polyline joining pendingPathPoints
@@ -688,8 +743,10 @@
       }).addTo(mapLeaflet);
       permanentLayer = L.layerGroup().addTo(mapLeaflet);
       entranceRoadFillLayer = L.layerGroup().addTo(mapLeaflet);
+      entranceRoadBorderLayer = L.layerGroup().addTo(mapLeaflet);
       permanentPathsLayer = L.layerGroup().addTo(mapLeaflet);
       entranceRoadLabelsLayer = L.layerGroup().addTo(mapLeaflet);
+      borderHandlesLayer = L.layerGroup().addTo(mapLeaflet);
       coordGridLayer = L.layerGroup().addTo(mapLeaflet);
       mapLeaflet.on("click", handleMapClick);
       mapLeaflet.on("zoomend", rescaleAllPins);
@@ -710,7 +767,7 @@
     startLocationFollow();
     // Pins and paths come from the server every time a map opens, so
     // something an admin placed from a different phone shows up here too.
-    await Promise.all([refreshPinsForMap(mapId), refreshPathsForMap(mapId)]);
+    await Promise.all([refreshPinsForMap(mapId), refreshPathsForMap(mapId), refreshBorderOverridesForMap(mapId)]);
     // Amazon Campground's def.center above is just a rough address geocode
     // from before any real pin/path data existed -- it was landing the
     // initial view well off from the actual property (Heath: "way off to
@@ -931,84 +988,132 @@
     }
     return pieces.map(inflatePiece);
   }
-  // The left edge, right edge, and (where real) the two end caps tracing
-  // a road's OVERALL outer boundary -- separate from buildRibbonPieces on
-  // purpose. That function's many small quads/triangles are what actually
-  // get filled; stroking each of THOSE individually was tried before and
-  // rejected (see drawTexturedRoad's own comment: it drew a border along
-  // every internal seam too, and every junction where several pieces
-  // converge piled multiple rings on top of each other into a visible
-  // blob -- "weird circles"). This instead builds simple edge lines for
-  // the whole road and strokes only those, as their own separate polylines
-  // added on top of (not replacing) the existing fill -- so it can't touch
-  // or regress the fill geometry at all. At a sharp bend this corner-cuts
-  // slightly relative to buildRibbonPieces' small wedge bulge there (a
-  // fraction of one width-length) rather than exactly tracing it -- an
-  // acceptable trade for a purely cosmetic border that carries zero risk
-  // to the actual road shape.
+  // ---- Computed road border (v49) ----
+  // v46/v47 tried to trace a road's border by REASONING about each
+  // junction (bridging two roads' edges, suppressing a cap where they
+  // meet, extending an alley's edge out to the road's true corner, ...).
+  // That tested clean against synthetic data but produced real gaps and
+  // stray crossing lines against Heath's actual waypoint geometry -- the
+  // bespoke per-junction logic didn't generalize to whatever angle/spacing
+  // his real alleys actually have. Reverted (v48).
   //
-  // Two fixes folded in after Heath flagged real problems with the first
-  // version (screenshot: a stray line cutting across mid-ribbon past an
-  // alley junction, a border sitting where In Road flows into Out Road,
-  // and the border sitting visibly inside the actual dirt edge elsewhere):
-  //
-  // 1. Widened by RIBBON_PIECE_OVERLAP_METERS on top of the road's own
-  //    width, matching how far inflatePiece already grows the FILL pieces
-  //    outward -- without this the border traced the pre-inflation edge
-  //    and sat slightly inside the visible dirt (issue 3: "the border is
-  //    not on edge, but slightly inset").
-  // 2. `opts.capStart`/`opts.capEnd` (default true = draw that end's cap)
-  //    let a caller suppress the perpendicular cap at whichever end(s)
-  //    are actually snapped/bridged onto another road rather than a real
-  //    dead end. Every alley connects at both ends (no free end at all),
-  //    and In Road's far end bridges straight into Out Road's near end --
-  //    a naive full ring at each of those independently drew a cap-line
-  //    cutting across the middle of what's supposed to read as one
-  //    continuous, seamless road (issue 1: "border runs far past where
-  //    the alleys meet the road" -- the alley's own cap sat inside the
-  //    wider merged junction blob rather than at any real pavement edge;
-  //    issue 2: "In road runs under out road, there should not be a
-  //    border there on out" -- Out Road's own start-cap was drawn right
-  //    where In Road flows into it). Left/right edges are still drawn in
-  //    full either way -- only the perpendicular closing line at a
-  //    bridged end is ever left out.
-  function buildRibbonOutline(points, widths, opts) {
-    opts = opts || {};
-    if (points.length < 2) return null;
-    const w = widthsForPoints(points, widths);
-    const grown = w.map((o) => ({ left: o.left + RIBBON_PIECE_OVERLAP_METERS, right: o.right + RIBBON_PIECE_OVERLAP_METERS }));
-    const quads = [];
-    for (let i = 0; i < points.length - 1; i++) {
-      quads.push(segmentQuad(points[i], grown[i], points[i + 1], grown[i + 1]));
+  // This replaces that entirely with a different approach: every small
+  // dirt-fill piece that ACTUALLY gets drawn (buildRibbonPieces' quads and
+  // triangles, fillRibbonJunction's wedges -- see `opts.piecesForUnion`/the
+  // `piecesForUnion` param threaded through drawTexturedRoad and
+  // fillRibbonJunction below) gets collected during one render pass, then
+  // unioned into a single shape with the polygon-clipping library (loaded
+  // in index.html) and the border is just THAT shape's own boundary. This
+  // can't produce a gap, a stray line, or an inset edge independently of
+  // the fill, because it isn't a separate calculation of where things
+  // "should" meet -- it's the same fill's own outline, so it's correct by
+  // construction against whatever actually got drawn, however irregular
+  // the real geometry feeding it is.
+  function ringToClipperPoly(ring) {
+    return [ring.map((p) => [p.lng, p.lat])];
+  }
+  // Unions every collected fill piece into whatever shape actually got
+  // drawn and returns its boundary as an array of polygons, each an array
+  // of rings ([outer, ...holes], Leaflet's own L.polygon convention) of
+  // {lat,lng} points. Empty array (not a throw) if the union library
+  // isn't loaded or there's nothing to union -- a missing/broken border is
+  // just a missing cosmetic overlay, never worth breaking the actual road
+  // rendering over.
+  function computeRoadBorderPolygons(piecesForUnion) {
+    if (!window.polygonClipping || !piecesForUnion || !piecesForUnion.length) return [];
+    try {
+      const unioned = window.polygonClipping.union(...piecesForUnion.map(ringToClipperPoly));
+      return unioned.map((polygon) => polygon.map((ring) => simplifyRing(ring.map(([lng, lat]) => ({ lat, lng })))));
+    } catch (err) {
+      console.error("[DriversDough] border union failed -- skipping the border overlay this render:", err);
+      return [];
     }
-    const left = [quads[0].aLeft].concat(quads.map((q) => q.bLeft));
-    const right = [quads[0].aRight].concat(quads.map((q) => q.bRight));
-    // `opts.startBridge`/`opts.endBridge` ({left,right}, already paired via
-    // pairEdgeCorners against this road's own edge at that end) extend the
-    // left/right lines out to the TRUE corner where a snapped/bridged
-    // junction's fill wedge actually lands, instead of stopping at this
-    // road's own raw un-widened edge. Without this, simply omitting the
-    // cap (capStart/capEnd above) still left a dangling loose end sitting
-    // inside the wider merged junction fill -- itself a visible stray line
-    // (Heath's screenshot: "border runs far past where the alleys meet the
-    // road"). Passed by renderEntranceRoad wherever it already has the
-    // matching crossSectionAtHit/ribbonEdgeAtEnd data (the exact same
-    // points fillRibbonJunction fills a wedge to), so the border and the
-    // fill agree on the junction's true shape.
-    if (opts.startBridge) {
-      left.unshift(opts.startBridge.left);
-      right.unshift(opts.startBridge.right);
+  }
+  // Perpendicular distance from `p` to the line through `a`/`b`, in
+  // meters -- the building block for the RDP simplification below.
+  function perpendicularDistanceMeters(p, a, b) {
+    const { latM, lngM } = metersPerDegreeAt(a.lat);
+    const bx = (b.lng - a.lng) * lngM;
+    const by = (b.lat - a.lat) * latM;
+    const px = (p.lng - a.lng) * lngM;
+    const py = (p.lat - a.lat) * latM;
+    const lenSq = bx * bx + by * by;
+    if (lenSq < 1e-9) return Math.hypot(px, py);
+    const t = Math.max(0, Math.min(1, (px * bx + py * by) / lenSq));
+    return Math.hypot(px - bx * t, py - by * t);
+  }
+  // Standard Ramer-Douglas-Peucker line simplification, in meters space.
+  function rdpSimplify(points, toleranceMeters) {
+    if (points.length < 3) return points.slice();
+    let maxDist = 0;
+    let maxIdx = 0;
+    for (let i = 1; i < points.length - 1; i++) {
+      const d = perpendicularDistanceMeters(points[i], points[0], points[points.length - 1]);
+      if (d > maxDist) {
+        maxDist = d;
+        maxIdx = i;
+      }
     }
-    if (opts.endBridge) {
-      left.push(opts.endBridge.left);
-      right.push(opts.endBridge.right);
+    if (maxDist > toleranceMeters) {
+      const left = rdpSimplify(points.slice(0, maxIdx + 1), toleranceMeters);
+      const right = rdpSimplify(points.slice(maxIdx), toleranceMeters);
+      return left.slice(0, -1).concat(right);
     }
-    return {
-      left,
-      right,
-      startCap: opts.capStart === false ? null : [left[0], right[0]],
-      endCap: opts.capEnd === false ? null : [left[left.length - 1], right[right.length - 1]],
-    };
+    return [points[0], points[points.length - 1]];
+  }
+  // Well under the narrowest road's own half-width (OUT_ROAD_HALF_WIDTH_METERS
+  // etc, all >= 1.75m) -- removes the small zigzag jitter the union
+  // boundary inherits from every piece being inflated/positioned
+  // independently (see inflatePiece) without ever moving a point far
+  // enough to visibly separate from the actual dirt, and keeps the
+  // drag-handle count (renderBorderHandles below) sane.
+  const BORDER_SIMPLIFY_METERS = 0.25;
+  function simplifyRing(ring) {
+    // polygon-clipping's output rings are self-closing (first === last) --
+    // RDP wants an open path with two fixed endpoints, so drop the
+    // duplicate closing point first, simplify, then close it back up.
+    // Rotated to start from whichever point sits farthest from the ring's
+    // own centroid, so the pass's two fixed "anchor" points land on a real
+    // corner rather than partway along a straight run (otherwise a long
+    // straight stretch that happens to contain the untouched index-0 seam
+    // could keep a spurious extra kink there).
+    const open =
+      ring.length > 2 && metersBetween(ring[0], ring[ring.length - 1]) < 0.01 ? ring.slice(0, -1) : ring.slice();
+    if (open.length < 4) return ring;
+    let cLat = 0;
+    let cLng = 0;
+    open.forEach((p) => {
+      cLat += p.lat;
+      cLng += p.lng;
+    });
+    const centroid = { lat: cLat / open.length, lng: cLng / open.length };
+    let farIdx = 0;
+    let farDist = -1;
+    open.forEach((p, i) => {
+      const d = metersBetween(p, centroid);
+      if (d > farDist) {
+        farDist = d;
+        farIdx = i;
+      }
+    });
+    const rotated = open.slice(farIdx).concat(open.slice(0, farIdx));
+    return rdpSimplify(rotated.concat([rotated[0]]), BORDER_SIMPLIFY_METERS);
+  }
+  // Hand-dragged adjustments (Setup Mode, renderBorderHandles below) are
+  // matched back onto a freshly-computed border by PROXIMITY to the point
+  // as originally computed (border_overrides.orig_lat/orig_lng), not by
+  // index -- the union's own vertex order/count can shift slightly
+  // between renders (piece draw order, floating point), but the computed
+  // position of any given real corner stays essentially the same. A drag
+  // landing back within this distance of its own computed position is
+  // treated as "put it back" and deletes the override instead of saving a
+  // near-zero one -- see handleBorderHandleDragEnd.
+  const BORDER_OVERRIDE_MATCH_METERS = 1.2;
+  function applyBorderOverrides(ring, overrides) {
+    return ring.map((p) => {
+      const match = (overrides || []).find((o) => metersBetween(p, { lat: o.origLat, lng: o.origLng }) <= BORDER_OVERRIDE_MATCH_METERS);
+      return { raw: p, display: match ? { lat: match.newLat, lng: match.newLng } : p, overrideId: match ? match.id : null };
+    });
   }
   // The road's own true left/right edge AT a closestPointOnPolyline() hit
   // -- i.e. exactly the corners buildRibbonPieces would draw there, using
@@ -1060,7 +1165,11 @@
   // same reasoning as buildRibbonPieces' interior joints) -- no shared
   // vertex assumed, since the two real endpoints these edges sit at can
   // be a genuine gap apart.
-  function fillRibbonJunction(edgeA, edgeB, fillLayer) {
+  // `piecesForUnion` (optional, see renderEntranceRoad) collects these
+  // same two wedge triangles alongside adding them to fillLayer, so the
+  // computed border (computeRoadBorderPolygons above) includes every
+  // junction wedge, not just each road's own straight-run pieces.
+  function fillRibbonJunction(edgeA, edgeB, fillLayer, piecesForUnion) {
     const paired = pairEdgeCorners(edgeA, edgeB);
     [
       [edgeA.left, paired.left, paired.right],
@@ -1074,6 +1183,7 @@
             { stroke: false, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 1, interactive: false }
           )
         );
+        if (piecesForUnion) piecesForUnion.push(tri);
       });
   }
   // The real left/right ribbon-edge points AT one END of a route (index 0
@@ -1451,29 +1561,11 @@
           { stroke: false, fillColor: "url(#dd-dirt-pattern)", fillOpacity: 1, interactive: false }
         )
       );
+      // See computeRoadBorderPolygons above -- collecting every piece
+      // that's actually drawn is what lets the border be traced from the
+      // real fill instead of reasoned about separately.
+      if (opts.piecesForUnion) opts.piecesForUnion.push(piece);
     });
-    // Thin black border -- see buildRibbonOutline's own comment for why
-    // this is a completely separate set of unfilled polylines added ON TOP
-    // of the fill above rather than a stroke on the fill pieces
-    // themselves. Left/right edges plus whichever end caps are real (not
-    // snapped onto another road -- opts.capStart/capEnd, passed by
-    // renderEntranceRoad's own call sites below) are each their own
-    // L.polyline rather than one closed L.polygon ring, specifically so a
-    // bridged end can just omit its cap instead of drawing one that has
-    // nowhere correct to go.
-    const outline = buildRibbonOutline(points, widthAt, {
-      capStart: opts.capStart,
-      capEnd: opts.capEnd,
-      startBridge: opts.startBridge,
-      endBridge: opts.endBridge,
-    });
-    if (outline) {
-      const borderStyle = { stroke: true, color: "#000", weight: 1.5, fill: false, interactive: false };
-      opts.fillLayer.addLayer(L.polyline(outline.left.map((p) => [p.lat, p.lng]), borderStyle));
-      opts.fillLayer.addLayer(L.polyline(outline.right.map((p) => [p.lat, p.lng]), borderStyle));
-      if (outline.startCap) opts.fillLayer.addLayer(L.polyline(outline.startCap.map((p) => [p.lat, p.lng]), borderStyle));
-      if (outline.endCap) opts.fillLayer.addLayer(L.polyline(outline.endCap.map((p) => [p.lat, p.lng]), borderStyle));
-    }
 
     // The ribbon's real visual middle -- for a symmetric width (inside ==
     // outside, e.g. the out road) this offset is 0 and centerline is just
@@ -1918,6 +2010,86 @@
       rec.paths[pathIndex].points.length >= 2
     );
   }
+  // Draws the computed border (computeRoadBorderPolygons) with any saved
+  // hand-drag overrides applied, and records the flat vertex list
+  // renderBorderHandles draws its draggable markers from. Cheap-ish but
+  // not free (re-runs the union) -- called once per full road render, and
+  // again by refreshBorderAfterOverrideChange after a drag saves, but NOT
+  // on every Setup Mode toggle (renderBorderHandles alone handles that).
+  function renderRoadBorderFromPieces(piecesForUnion, overrides) {
+    const polygons = computeRoadBorderPolygons(piecesForUnion);
+    lastBorderVertices = [];
+    const displayPolygons = polygons.map((rings) =>
+      rings.map((ring) => {
+        const applied = applyBorderOverrides(ring, overrides);
+        applied.forEach((v) => lastBorderVertices.push(v));
+        return applied.map((v) => v.display);
+      })
+    );
+    entranceRoadBorderLayer?.clearLayers();
+    displayPolygons.forEach((rings) => {
+      entranceRoadBorderLayer.addLayer(
+        L.polygon(
+          rings.map((ring) => ring.map((p) => [p.lat, p.lng])),
+          { stroke: true, color: "#000", weight: 2, opacity: 0.9, fill: false, interactive: false }
+        )
+      );
+    });
+    renderBorderHandles();
+  }
+  // Small circular handle icon for a draggable border point -- deliberately
+  // plain (not a numbered badge like pins/path points) so it reads as "drag
+  // to nudge the border" rather than competing with the real pin/waypoint
+  // markers also visible in Setup Mode.
+  function makeBorderHandleIcon(scale, hasOverride) {
+    const d = Math.max(9, Math.round(11 * (scale || 1)));
+    const fill = hasOverride ? "#00e5ff" : "#ffffff";
+    const html =
+      '<div style="width:' + d + "px;height:" + d + "px;border-radius:50%;background:" + fill +
+      ';border:2px solid #171008;box-shadow:0 0 3px rgba(0,0,0,.7);"></div>';
+    return L.divIcon({ html, className: "dd-path-div-icon dd-border-handle-icon", iconSize: [d, d], iconAnchor: [d / 2, d / 2] });
+  }
+  // (Re)draws the draggable handle markers from lastBorderVertices --
+  // separate from renderRoadBorderFromPieces so toggling Setup Mode
+  // on/off (setSetupMode below) doesn't have to redo the union just to
+  // show/hide the handles.
+  function renderBorderHandles() {
+    borderHandlesLayer?.clearLayers();
+    if (!setupModeOn || currentMapId !== "amazon") return;
+    const scale = scaleForZoom(mapLeaflet);
+    lastBorderVertices.forEach((v) => {
+      const marker = L.marker([v.display.lat, v.display.lng], {
+        icon: makeBorderHandleIcon(scale, !!v.overrideId),
+        draggable: true,
+        keyboard: false,
+        zIndexOffset: 500,
+      });
+      marker.on("dragend", () => {
+        const ll = marker.getLatLng();
+        handleBorderHandleDragEnd(v.raw, { lat: ll.lat, lng: ll.lng }, v.overrideId);
+      });
+      borderHandlesLayer.addLayer(marker);
+    });
+  }
+  // Re-unions from the pieces already collected on the last full render
+  // (lastPiecesForUnion) and reapplies overrides -- cheaper than re-running
+  // the whole road-drawing pipeline just because one point moved.
+  async function refreshBorderAfterOverrideChange() {
+    await refreshBorderOverridesForMap(currentMapId);
+    const rec = getMapRecord(currentMapId);
+    renderRoadBorderFromPieces(lastPiecesForUnion, rec.borderOverrides);
+  }
+  async function handleBorderHandleDragEnd(rawPoint, newPoint, existingOverrideId) {
+    const backToComputed = metersBetween(newPoint, rawPoint) <= BORDER_OVERRIDE_MATCH_METERS;
+    let result;
+    if (backToComputed) {
+      result = existingOverrideId ? await deleteBorderOverride(existingOverrideId) : { ok: true };
+    } else {
+      result = await saveBorderOverride(currentMapId, rawPoint.lat, rawPoint.lng, newPoint.lat, newPoint.lng);
+    }
+    if (result && result.ok === false) showServerError(result.error);
+    await refreshBorderAfterOverrideChange();
+  }
   // Returns true if the overlay actually finished drawing, false if it blew
   // up partway through. Callers (renderPermanentPaths) use this to decide
   // whether it's safe to hide each path's raw dashed line in favor of this
@@ -1933,6 +2105,12 @@
     entranceRoadFillLayer?.clearLayers();
     entranceRoadLabelsLayer?.clearLayers();
     try {
+
+    // Every dirt-fill piece drawn this pass (drawTexturedRoad's quads/
+    // triangles, fillRibbonJunction's wedges below) gets pushed in here
+    // too -- see computeRoadBorderPolygons's own comment for why the
+    // border is traced from this instead of computed separately.
+    const piecesForUnion = [];
 
     let combined = getAmazonEntranceCombinedRoute(rec);
     let outRoadPoints = hasOutRoad(rec) ? rec.paths[2].points : null;
@@ -2099,6 +2277,7 @@
         startLabelOffset: [-4, 14],
         fillLayer: entranceRoadFillLayer,
         labelsLayer: entranceRoadLabelsLayer,
+        piecesForUnion,
         capEnd: !inOutBridged,
         endBridge: combinedEndBridge,
       });
@@ -2113,6 +2292,7 @@
         startLabelText: null,
         fillLayer: entranceRoadFillLayer,
         labelsLayer: entranceRoadLabelsLayer,
+        piecesForUnion,
         capStart: !inOutBridged,
         startBridge: outRoadStartBridge,
       });
@@ -2161,12 +2341,13 @@
         endBridge: alleyEndEdge ? pairEdgeCorners(alleyEndEdge, alley.endCrossSection) : null,
         fillLayer: entranceRoadFillLayer,
         labelsLayer: entranceRoadLabelsLayer,
+        piecesForUnion,
       });
       if (alley.startCrossSection) {
-        fillRibbonJunction(alleyStartEdge, alley.startCrossSection, entranceRoadFillLayer);
+        fillRibbonJunction(alleyStartEdge, alley.startCrossSection, entranceRoadFillLayer, piecesForUnion);
       }
       if (alley.endCrossSection) {
-        fillRibbonJunction(alleyEndEdge, alley.endCrossSection, entranceRoadFillLayer);
+        fillRibbonJunction(alleyEndEdge, alley.endCrossSection, entranceRoadFillLayer, piecesForUnion);
       }
     });
 
@@ -2179,8 +2360,17 @@
     if (combined && outRoadPoints) {
       const entranceEdge = ribbonEdgeAtEnd(combined, false, combinedWidths);
       const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS });
-      fillRibbonJunction(entranceEdge, outRoadEdge, entranceRoadFillLayer);
+      fillRibbonJunction(entranceEdge, outRoadEdge, entranceRoadFillLayer, piecesForUnion);
     }
+
+    // Every piece for this render is collected now -- union it into the
+    // computed border, apply any saved hand-drag overrides, and draw it
+    // (plus its Setup Mode drag handles). See computeRoadBorderPolygons's
+    // own comment for why this approach replaced the old per-junction
+    // border reasoning (v46/v47, reverted as v48).
+    lastPiecesForUnion = piecesForUnion;
+    renderRoadBorderFromPieces(piecesForUnion, rec.borderOverrides);
+
     // Snapshot of exactly what got drawn (the FINAL, snapped/deduped
     // points each road ended up with, not the raw waypoint data) -- this
     // is what nearestRoadColor below matches a pin against, so "which
@@ -2207,6 +2397,10 @@
       );
       entranceRoadFillLayer?.clearLayers();
       entranceRoadLabelsLayer?.clearLayers();
+      entranceRoadBorderLayer?.clearLayers();
+      borderHandlesLayer?.clearLayers();
+      lastBorderVertices = [];
+      lastPiecesForUnion = [];
       return false;
     }
   }
@@ -2357,6 +2551,9 @@
     // eats vertical space above an already-cramped setup bar.
     searchBar?.classList.toggle("hide", on);
     if (on && setupInstructions) setupInstructions.textContent = readyMessage();
+    // Border drag handles are only ever shown in Setup Mode -- cheap
+    // redraw from the last computed border, no need to recompute anything.
+    renderBorderHandles();
   }
   setupToggleBtn?.addEventListener("click", () => {
     const session = window.DD.auth && window.DD.auth.getSession();
