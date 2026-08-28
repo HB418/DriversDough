@@ -1425,7 +1425,18 @@
     const copy = points.slice();
     copy.splice(hit.segmentIndex + 1, 0, hit.point);
     let companionCopy = companion;
-    if (companion) {
+    // `companion` is only ever a real per-point array for roads that carry
+    // varying width along their length (In Road's combined route). Alleys
+    // and connectors draw at one flat width (see drawTexturedRoad's
+    // insideMeters/outsideMeters calls below), so snapAlleyToRoads/callers
+    // pass a single broadcast {left,right} object instead -- same shape
+    // widthsForPoints already treats as "same width everywhere". That
+    // object has no per-index entries to interpolate or splice, so leave
+    // it untouched rather than assuming .slice() exists on it (that
+    // assumption is what threw when waypoint 10's alley-to-alley connector
+    // snapped onto Alley One/Rec Road: companion was OUT_ROAD_WIDTHS, a
+    // plain object, not an array).
+    if (Array.isArray(companion)) {
       const a = companion[hit.segmentIndex];
       const b = companion[hit.segmentIndex + 1];
       companionCopy = companion.slice();
@@ -1595,9 +1606,21 @@
       rec.paths[pathIndex].points.length >= 2
     );
   }
+  // Returns true if the overlay actually finished drawing, false if it blew
+  // up partway through. Callers (renderPermanentPaths) use this to decide
+  // whether it's safe to hide each path's raw dashed line in favor of this
+  // overlay -- hasAlleyRoad/hasConnectorRoad only check that the DATA
+  // exists, not that this function successfully drew it, so without this
+  // signal a bug in here (new alley/connector geometry hitting some edge
+  // case the synthetic tests didn't cover) can silently blank the whole
+  // road display: the raw lines already got hidden on the data check alone,
+  // then this throws before finishing any polygons. Wrapping the whole body
+  // means a future bug here degrades to "still see the raw waypoint lines",
+  // never a fully blank map.
   function renderEntranceRoad(rec) {
     entranceRoadFillLayer?.clearLayers();
     entranceRoadLabelsLayer?.clearLayers();
+    try {
 
     let combined = getAmazonEntranceCombinedRoute(rec);
     let outRoadPoints = hasOutRoad(rec) ? rec.paths[2].points : null;
@@ -1803,6 +1826,16 @@
       const outRoadEdge = ribbonEdgeAtEnd(outRoadPoints, true, { left: OUT_ROAD_HALF_WIDTH_METERS, right: OUT_ROAD_HALF_WIDTH_METERS });
       fillRibbonJunction(entranceEdge, outRoadEdge, entranceRoadFillLayer);
     }
+    return true;
+    } catch (err) {
+      console.error(
+        "[DriversDough] renderEntranceRoad failed -- showing raw waypoint lines instead of the road overlay. Please send this error to Heath's dev:",
+        err
+      );
+      entranceRoadFillLayer?.clearLayers();
+      entranceRoadLabelsLayer?.clearLayers();
+      return false;
+    }
   }
 
   function renderPermanentPaths() {
@@ -1813,6 +1846,13 @@
     const pathsInteractive = setupModeOn;
     const hideAsEntranceRoad = hasEntranceRoad(rec);
     const hideAsOutRoad = hasOutRoad(rec);
+    // Render the road/alley overlay FIRST, before deciding whether to hide
+    // any path's raw dashed line below -- hasAlleyRoad/hasConnectorRoad
+    // only confirm the DATA exists, not that the overlay actually drew.
+    // Gating every hide decision on the real outcome means a bug in the
+    // overlay renderer falls back to raw waypoint lines instead of a blank
+    // map (see renderEntranceRoad's own comment).
+    const entranceRoadOk = renderEntranceRoad(rec);
     rec.paths.forEach((path, pathIndex) => {
       if (editingPathId === path.id) return;
       // Routes 1 and 2 are the entrance road, route 3 is the out road,
@@ -1827,7 +1867,7 @@
       // what got hidden. Setup Mode is specifically the admin view for
       // inspecting/managing the real saved data, so it always shows the
       // real pins for every path, road-covered or not.
-      if (!pathsInteractive) {
+      if (!pathsInteractive && entranceRoadOk) {
         if (hideAsEntranceRoad && pathIndex < 2) return;
         if (hideAsOutRoad && pathIndex === 2) return;
         if (hasAlleyRoad(rec, pathIndex) || hasConnectorRoad(rec, pathIndex)) return;
@@ -1865,7 +1905,6 @@
         permanentPathsLayer.addLayer(marker);
       });
     });
-    renderEntranceRoad(rec);
   }
   function rescaleAllPins() {
     if (!mapLeaflet) return;
