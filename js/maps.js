@@ -1074,12 +1074,17 @@
     svg.style.position = "absolute";
     svg.innerHTML =
       '<defs>' +
+      // Base fill (#d3cbcd) and the noise tint below are both sampled
+      // directly from the real dirt lot in Heath's own satellite view
+      // (median pixel color of a clean patch, avoiding vehicles/shadows/
+      // trees) -- the old #a9835f was a guessed orange-brown that read
+      // noticeably darker/warmer than the actual ground next to it.
       '<filter id="dd-dirt-noise" x="0" y="0" width="100%" height="100%">' +
       '<feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="3" seed="7" result="noise"/>' +
-      '<feColorMatrix in="noise" type="matrix" values="0 0 0 0 0.55  0 0 0 0 0.42  0 0 0 0 0.30  0 0 0 0.55 0"/>' +
+      '<feColorMatrix in="noise" type="matrix" values="0 0 0 0 0.72  0 0 0 0 0.68  0 0 0 0 0.66  0 0 0 0.4 0"/>' +
       '</filter>' +
       '<pattern id="dd-dirt-pattern" patternUnits="userSpaceOnUse" width="60" height="60">' +
-      '<rect width="60" height="60" fill="#a9835f"/>' +
+      '<rect width="60" height="60" fill="#d3cbcd"/>' +
       '<rect width="60" height="60" filter="url(#dd-dirt-noise)"/>' +
       '</pattern>' +
       '</defs>';
